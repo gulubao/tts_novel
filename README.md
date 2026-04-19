@@ -154,3 +154,101 @@ This uses Kokoro-82M, an Apache-2.0 local TTS model (~1 GB RAM, CPU-only). No `.
 - A `_pcm_cache/` folder with raw audio bits (you can delete this once everything's done; it's just for the "resume where I left off" feature)
 
 MP3 quality is controlled by the `--mp3-quality` flag (0.0 = highest ~73 kbps, 0.5 = default ~40 kbps, 0.8 = smallest ~33 kbps).
+
+## Create audiobook with Storyteller (optional)
+
+Once you have an EPUB file and its corresponding MP3 audiobook from this tool, you can combine them into a **synced-narration ("read-aloud") book** using [Storyteller](https://storyteller-platform.dev) — an open-source platform that aligns audio with ebook text so the words highlight as they are spoken. The resulting book can be read offline on iOS devices via the Storyteller mobile app.
+
+### Self-host the Storyteller server
+
+#### CPU-only (no GPU required)
+
+```bash
+# 1. Create a directory for Storyteller data
+mkdir -p ~/Documents/Storyteller
+
+# 2. Generate a secret key (one-time)
+export STORYTELLER_SECRET_KEY=$(openssl rand -base64 32)
+
+# 3. Start the server
+docker run -d \
+  --name storyteller \
+  -v ~/Documents/Storyteller:/data:rw \
+  -p 8001:8001 \
+  -e STORYTELLER_SECRET_KEY=$STORYTELLER_SECRET_KEY \
+  registry.gitlab.com/storyteller-platform/storyteller:latest
+```
+
+Or with Docker Compose — create `compose.yaml`:
+
+```yaml
+services:
+  web:
+    image: registry.gitlab.com/storyteller-platform/storyteller:latest
+    volumes:
+      - ~/Documents/Storyteller:/data:rw
+    environment:
+      - STORYTELLER_SECRET_KEY_FILE=/run/secrets/secret_key
+    ports:
+      - "8001:8001"
+    secrets:
+      - secret_key
+
+secrets:
+  secret_key:
+    file: ./STORYTELLER_SECRET_KEY.txt
+```
+
+Put your generated key in `./STORYTELLER_SECRET_KEY.txt`, then run `docker compose up -d`.
+
+#### With GPU acceleration (NVIDIA CUDA)
+
+Storyteller supports GPU-accelerated audio transcription via CUDA. This significantly speeds up alignment.
+
+Add GPU passthrough to the Docker Compose file:
+
+```yaml
+services:
+  web:
+    image: registry.gitlab.com/storyteller-platform/storyteller:latest
+    volumes:
+      - ~/Documents/Storyteller:/data:rw
+    environment:
+      - STORYTELLER_SECRET_KEY_FILE=/run/secrets/secret_key
+    ports:
+      - "8001:8001"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    secrets:
+      - secret_key
+
+secrets:
+  secret_key:
+    file: ./STORYTELLER_SECRET_KEY.txt
+```
+
+Requires the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) installed on the host.
+
+#### Minimum resources
+
+| Component | CPU-only | With CUDA |
+|---|---|---|
+| CPU | Up to 4 cores (Intel/AMD or ARM64 including Apple Silicon) | Same |
+| GPU | Not required | NVIDIA (CUDA 11.8 / 12.x / 13.x) |
+| RAM | 8 GB | 8 GB |
+| Storage | 10 GB | 30 GB |
+| Swap | ~12 GB recommended if RAM is tight | Same |
+
+### Use it
+
+1. Open `http://localhost:8001` in a browser and create your admin account.
+2. Upload your **EPUB** file and the **MP3** audiobook produced by tts-novel.
+3. Storyteller aligns the audio with the text automatically.
+4. Install the [Storyteller iOS app](https://apps.apple.com/app/storyteller) and connect to your server to read and listen offline.
+
+For the full self-hosting guide, see [https://storyteller-platform.dev/docs/installation/self-hosting](https://storyteller-platform.dev/docs/installation/self-hosting).

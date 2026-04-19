@@ -29,6 +29,27 @@ gcloud auth application-default set-quota-project <your-gcp-project-id>
 gcloud services enable aiplatform.googleapis.com --project <your-gcp-project-id>
 ```
 
+### Switching Google Cloud projects
+
+To switch to a different Google Cloud project or account (e.g., to use a different billing account):
+
+```bash
+# 1. Sign in with the new account (opens browser)
+gcloud auth login
+
+# 2. Update application default credentials
+gcloud auth application-default login
+
+# 3. Set the new quota project
+gcloud auth application-default set-quota-project <your-new-project-id>
+
+# 4. Enable Vertex AI API on the new project
+gcloud services enable aiplatform.googleapis.com --project <your-new-project-id>
+
+# 5. Update .env with the new project ID
+# Edit .env and change: GOOGLE_CLOUD_PROJECT=<your-new-project-id>
+```
+
 ### Mode B — Gemini Developer API (uses AI Studio prepayment balance)
 
 ```
@@ -37,9 +58,9 @@ GEMINI_API_KEY=<your key>
 
 Omit `USE_VERTEX` or set it to `0`.
 
-## Convert EPUB to per-chapter WAVs (default behaviour)
+## Convert EPUB to per-chapter WAVs and MP3s (default behaviour)
 
-One WAV per eligible chapter (`chapter_000.wav`, `chapter_001.wav`, …) under `--output-dir`. Chapters whose WAV already exists are skipped, so the run is resumable if it's interrupted:
+One WAV and one MP3 per eligible chapter (`chapter_000.wav` + `chapter_000.mp3`, `chapter_001.wav` + `chapter_001.mp3`, …) under `--output-dir`. Chapters whose WAV and MP3 already exist are both skipped, so the run is resumable if it's interrupted:
 
 ```bash
 uv run python -m tts_novel.cli \
@@ -85,9 +106,10 @@ uv run python -m tts_novel.cli \
 | `--chapter` | all | Synthesize only the chapter at this 0-based eligible index. |
 | `--min-chapter-chars` | `2000` | Discards short EPUB items (cover, TOC, dedication). |
 | `--max-chars-per-chunk` | `2500` | Soft upper bound on characters per TTS request. |
-| `--no-combine` | off | Skip the final step that produces the combined `<book-stem>.wav`. Ignored when `--chapter N` is set. |
+| `--no-combine` | off | Skip the final step that produces the combined `<book-stem>.wav` and `<book-stem>.mp3`. Ignored when `--chapter N` is set. |
 | `--local-voice` | `bf_emma` | Kokoro voice id (British female). Used in `auto` fallback and `local` mode. |
 | `--local-lang-code` | `b` | Kokoro language code (`b` = British English, `a` = American English). |
+| `--mp3-quality` | `0.5` | MP3 compression level in [0.0, 0.9]. 0.0 = highest quality (~73 kbps VBR), 0.5 = balanced (~40 kbps), 0.8 = smallest (~33 kbps). |
 
 ## Local-only mode (no Google account, no network, no cost)
 
@@ -117,8 +139,11 @@ uv run python -m pytest tests -q
 ```
 <output-dir>/
 ├── <book-stem>.wav                  # combined single-file audiobook (produced after all chapters finish)
-├── chapter_000.wav                  # first eligible chapter
+├── <book-stem>.mp3                  # combined single-file audiobook MP3 (produced after all chapters finish)
+├── chapter_000.wav                  # first eligible chapter WAV
+├── chapter_000.mp3                  # first eligible chapter MP3
 ├── chapter_001.wav
+├── chapter_001.mp3
 ├── ...
 └── _pcm_cache/
     ├── ch004_c000.pcm               # raw PCM per (doc_index, chunk_index)
@@ -126,6 +151,6 @@ uv run python -m pytest tests -q
     └── ...
 ```
 
-The combined `<book-stem>.wav` is written automatically after every chapter WAV is present. It is skipped when any chapter WAV is missing, when the combined file already exists, when `--chapter N` selected a single chapter, or when `--no-combine` was passed. Deleting the combined WAV and re-running the CLI regenerates it from the existing chapter WAVs without any API calls.
+The combined `<book-stem>.wav` and `<book-stem>.mp3` are written automatically after every chapter WAV and MP3 are present. They are skipped when any chapter file is missing, when the combined file already exists, when `--chapter N` selected a single chapter, or when `--no-combine` was passed. Deleting the combined files and re-running the CLI regenerates them from the existing chapter files without any API calls.
 
 Deleting any `chapter_NNN.wav` forces that chapter to be re-stitched from the PCM cache. Deleting a `.pcm` file forces that chunk to be re-synthesized via the API on the next run.
