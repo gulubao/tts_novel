@@ -11,8 +11,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="tts-novel",
         description=(
-            "Convert an EPUB file to one narrated WAV per chapter using Gemini TTS. "
-            "Default is every eligible chapter; use --chapter N for a single chapter."
+            "Convert an EPUB file to one narrated WAV per chapter. Default backend "
+            "is 'auto' (Gemini TTS with local Kokoro-82M fallback on content-policy "
+            "blocks); '--backend local' bypasses Gemini entirely."
         ),
     )
     parser.add_argument("--input", required=True, type=Path, help="Path to the EPUB file.")
@@ -28,11 +29,21 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Directory for per-chunk PCM cache (default: <output-dir>/_pcm_cache).",
     )
-    parser.add_argument("--voice", default=DEFAULT_VOICE, help="Prebuilt voice name.")
+    parser.add_argument(
+        "--backend",
+        choices=("auto", "local"),
+        default="auto",
+        help=(
+            "Which synthesis backend to use. 'auto' (default): call Gemini TTS "
+            "first, fall back to local Kokoro-82M on a content-policy block. "
+            "'local': use Kokoro-82M only, no Google API calls or authentication."
+        ),
+    )
+    parser.add_argument("--voice", default=DEFAULT_VOICE, help="Gemini prebuilt voice name.")
     parser.add_argument(
         "--style-preamble",
         default=DEFAULT_STYLE_PREAMBLE,
-        help="Style instruction prepended to every synthesis prompt.",
+        help="Style instruction prepended to every Gemini synthesis prompt.",
     )
     parser.add_argument(
         "--chapter",
@@ -65,29 +76,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
-        "--skip-blocked-chunks",
-        action="store_true",
-        help=(
-            "On a Gemini content-policy block (PROHIBITED_CONTENT or post-hoc SAFETY), "
-            "insert a short silence in place of the blocked chunk and continue "
-            "instead of halting. A summary of blocked chunks is printed at the end."
-        ),
-    )
-    parser.add_argument(
-        "--local-fallback",
-        action="store_true",
-        help=(
-            "On a Gemini content-policy block, fall back to a local Kokoro-82M "
-            "synthesis of the chunk (Apache-2.0, runs on this machine's CPU/MPS, "
-            "requires espeak-ng). Preferred over --skip-blocked-chunks because the "
-            "output has no silent gaps. Both flags can be set; local fallback takes "
-            "precedence when a block occurs."
-        ),
-    )
-    parser.add_argument(
         "--local-voice",
         default="bf_emma",
-        help="Kokoro voice id for the local fallback (default: bf_emma — British female).",
+        help="Kokoro voice id (default: bf_emma — British female).",
+    )
+    parser.add_argument(
+        "--local-lang-code",
+        default="b",
+        help="Kokoro language code (default: b — British English).",
     )
     return parser
 
@@ -108,9 +104,9 @@ def main() -> None:
         min_chapter_chars=args.min_chapter_chars,
         max_chars_per_chunk=args.max_chars_per_chunk,
         combine=not args.no_combine,
-        skip_blocked_chunks=args.skip_blocked_chunks,
-        local_fallback=args.local_fallback,
+        backend_mode=args.backend,
         local_voice=args.local_voice,
+        local_lang_code=args.local_lang_code,
     )
 
     result = convert(plan)
@@ -137,7 +133,7 @@ def main() -> None:
         )
 
     if result.blocked_chunks:
-        print(f"Blocked chunks: {len(result.blocked_chunks)}")
+        print(f"Blocked chunks (filled by fallback): {len(result.blocked_chunks)}")
         for b in result.blocked_chunks:
             print(
                 f"  chapter {b.chapter_eligible_index:03d} doc={b.chapter_doc_index:03d} "

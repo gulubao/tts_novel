@@ -1,15 +1,18 @@
-"""Local TTS backend using Kokoro-82M.
+"""Local Kokoro-82M backend.
 
-Used as a fallback when Gemini refuses a chunk under its PROHIBITED_CONTENT
-policy. Output format matches the Gemini path exactly: 24 kHz mono 16-bit PCM
-bytes, suitable for the existing `wav_writer.concat_pcm` + `write_wav`.
+Apache-2.0 model, runs on CPU (~1 GB RAM, no GPU). Matches the Gemini audio
+format exactly (24 kHz mono 16-bit PCM), so WAV stitching is seamless across
+mixed-backend chapters. Model load is deferred to the first ``synthesize``
+call; callers that never trigger it pay no import cost.
 """
 
 import sys
+import time
 from datetime import datetime
 
 import numpy as np
 
+from tts_novel.backends.base import SynthesisResult
 from tts_novel.config import CHANNELS, SAMPLE_RATE_HZ, SAMPLE_WIDTH_BYTES
 
 
@@ -18,11 +21,7 @@ def _ts() -> str:
 
 
 class KokoroBackend:
-    """Lazy-loaded Kokoro pipeline.
-
-    Construction is cheap; the model is loaded on first `synthesize()` call
-    so callers that never actually trigger the fallback pay no import cost.
-    """
+    name = "kokoro"
 
     def __init__(self, lang_code: str = "b", voice: str = "bf_emma"):
         self._lang_code = lang_code
@@ -44,13 +43,14 @@ class KokoroBackend:
             repo_id="hexgrad/Kokoro-82M",
         )
 
-    def synthesize(self, text: str) -> bytes:
+    def synthesize(self, text: str) -> SynthesisResult:
         self._ensure_loaded()
         assert self._pipeline is not None
+        t0 = time.monotonic()
         segments = list(self._pipeline(text, voice=self._voice))
         if not segments:
             raise RuntimeError("Kokoro returned no audio segments for chunk")
         audio = np.concatenate([seg for _, _, seg in segments])
         pcm = (audio * 32767).clip(-32768, 32767).astype(np.int16).tobytes()
         assert CHANNELS == 1 and SAMPLE_RATE_HZ == 24000 and SAMPLE_WIDTH_BYTES == 2
-        return pcm
+        return SynthesisResult(pcm=pcm, backend=self.name, seconds=time.monotonic() - t0)

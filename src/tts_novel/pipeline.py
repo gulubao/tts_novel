@@ -1,6 +1,5 @@
 """Pipeline orchestrator: EPUB path to one WAV per chapter with PCM cache."""
 
-import sys
 import time
 import wave
 from dataclasses import dataclass, field
@@ -77,17 +76,16 @@ class ProgressTracker:
         )
 
 
+from tts_novel.backends import BackendMode, TTSBackend, build_backend
 from tts_novel.config import (
     CHANNELS,
     DEFAULT_STYLE_PREAMBLE,
     DEFAULT_VOICE,
     SAMPLE_RATE_HZ,
     SAMPLE_WIDTH_BYTES,
-    load_client_settings,
 )
 from tts_novel.epub_reader import Chapter, read_epub
 from tts_novel.text_chunker import chunk_text
-from tts_novel.tts_client import BlockedContentError, TTSClient
 from tts_novel.wav_writer import concat_pcm, duration_seconds, write_wav
 
 
@@ -102,9 +100,7 @@ class ConversionPlan:
     min_chapter_chars: int = 2000
     max_chars_per_chunk: int = 2500
     combine: bool = True
-    skip_blocked_chunks: bool = False
-    block_gap_seconds: float = 1.0
-    local_fallback: bool = False
+    backend_mode: BackendMode = "auto"
     local_voice: str = "bf_emma"
     local_lang_code: str = "b"
 
@@ -184,9 +180,8 @@ def _synthesize_chapter(
     chapter: Chapter,
     eligible_index: int,
     plan: ConversionPlan,
-    client: TTSClient,
+    backend: TTSBackend,
     blocked_sink: list["BlockedChunkRecord"],
-    kokoro_box: list,
     progress: ProgressTracker,
 ) -> ChapterResult:
     wav_path = _chapter_wav_path(plan.output_dir, eligible_index)
@@ -225,86 +220,29 @@ def _synthesize_chapter(
     for ci, chunk in enumerate(chunks):
         cache_path = plan.cache_dir / f"ch{chapter.index:03d}_c{ci:03d}.pcm"
         cached = cache_path.exists()
-        t0 = time.monotonic()
         if cached:
             pcm = cache_path.read_bytes()
             status = f"cached ({len(pcm):,} bytes)"
+            progress_kind = "cached"
+            synth_seconds: float | None = None
         else:
-            try:
-                pcm = client.synthesize(chunk, plan.voice, plan.style_preamble)
-            except BlockedContentError as e:
-                reason = str(e).split("\n", 1)[0]
-                if plan.local_fallback:
-                    if not kokoro_box:
-                        from tts_novel.kokoro_backend import KokoroBackend
-
-                        kokoro_box.append(
-                            KokoroBackend(
-                                lang_code=plan.local_lang_code,
-                                voice=plan.local_voice,
-                            )
-                        )
-                    t0_ko = time.monotonic()
-                    pcm = kokoro_box[0].synthesize(chunk)
-                    cache_path.write_bytes(pcm)
-                    print(
-                        f"[{_ts()}]   [chapter {eligible_index:03d} doc={chapter.index:03d}] "
-                        f"chunk {ci + 1}/{len(chunks)} chars={len(chunk)} "
-                        f"kokoro ({len(pcm):,} bytes in {time.monotonic() - t0_ko:.1f}s) "
-                        f"— gemini blocked: {reason}",
-                        flush=True,
-                    )
-                    pcm_parts.append(pcm)
-                    records.append(
-                        ChunkRecord(
-                            chapter_doc_index=chapter.index,
-                            chapter_eligible_index=eligible_index,
-                            chapter_title=chapter.title,
-                            chunk_index=ci,
-                            chars=len(chunk),
-                            pcm_bytes=len(pcm),
-                            cached=False,
-                            cache_path=cache_path,
-                        )
-                    )
-                    blocked_sink.append(
-                        BlockedChunkRecord(
-                            chapter_doc_index=chapter.index,
-                            chapter_eligible_index=eligible_index,
-                            chunk_index=ci,
-                            chars=len(chunk),
-                            reason=f"gemini blocked, kokoro filled: {reason}",
-                        )
-                    )
-                    progress.tick(kind="kokoro")
-                    continue
-                if not plan.skip_blocked_chunks:
-                    raise
-                gap_bytes = int(
-                    plan.block_gap_seconds * SAMPLE_RATE_HZ * SAMPLE_WIDTH_BYTES * CHANNELS
-                )
-                pcm = b"\x00" * gap_bytes
-                print(
-                    f"[{_ts()}]   [chapter {eligible_index:03d} doc={chapter.index:03d}] "
-                    f"chunk {ci + 1}/{len(chunks)} chars={len(chunk)} "
-                    f"BLOCKED ({plan.block_gap_seconds:.1f}s silence inserted) — {reason}",
-                    flush=True,
-                )
+            result = backend.synthesize(chunk)
+            pcm = result.pcm
+            cache_path.write_bytes(pcm)
+            synth_seconds = result.seconds
+            progress_kind = result.backend
+            status = f"{result.backend:6s} ({len(pcm):,} bytes in {result.seconds:.1f}s)"
+            if result.fallback_reason is not None:
+                status += f" — primary blocked: {result.fallback_reason}"
                 blocked_sink.append(
                     BlockedChunkRecord(
                         chapter_doc_index=chapter.index,
                         chapter_eligible_index=eligible_index,
                         chunk_index=ci,
                         chars=len(chunk),
-                        reason=reason,
+                        reason=f"primary blocked, {result.backend} filled: {result.fallback_reason}",
                     )
                 )
-                pcm_parts.append(pcm)
-                progress.tick(kind="silence")
-                continue
-            synth_seconds = time.monotonic() - t0
-            cache_path.write_bytes(pcm)
-            status = f"synth  ({len(pcm):,} bytes in {synth_seconds:.1f}s)"
         print(
             f"[{_ts()}]   [chapter {eligible_index:03d} doc={chapter.index:03d}] "
             f"chunk {ci + 1}/{len(chunks)} chars={len(chunk)} {status}",
@@ -323,10 +261,7 @@ def _synthesize_chapter(
                 cache_path=cache_path,
             )
         )
-        if cached:
-            progress.tick(kind="cached")
-        else:
-            progress.tick(synth_seconds=time.monotonic() - t0, kind="gemini")
+        progress.tick(synth_seconds=synth_seconds, kind=progress_kind)
 
     full_pcm = concat_pcm(pcm_parts)
     write_wav(wav_path, full_pcm)
@@ -421,9 +356,15 @@ def _combine_chapter_wavs(plan: ConversionPlan, result: ConversionResult) -> Non
     )
 
 
-def convert(plan: ConversionPlan, client: TTSClient | None = None) -> ConversionResult:
-    if client is None:
-        client = TTSClient(load_client_settings())
+def convert(plan: ConversionPlan, backend: TTSBackend | None = None) -> ConversionResult:
+    if backend is None:
+        backend = build_backend(
+            plan.backend_mode,
+            voice=plan.voice,
+            style_preamble=plan.style_preamble,
+            local_voice=plan.local_voice,
+            local_lang_code=plan.local_lang_code,
+        )
 
     plan.output_dir.mkdir(parents=True, exist_ok=True)
     plan.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -442,22 +383,22 @@ def convert(plan: ConversionPlan, client: TTSClient | None = None) -> Conversion
         iter_set = [(plan.chapter_index, picked)]
 
     result = ConversionResult(output_dir=plan.output_dir)
-    kokoro_box: list = []
 
     total_chunks = 0
     for _, chapter in iter_set:
         total_chunks += len(chunk_text(chapter.text, max_chars=plan.max_chars_per_chunk))
     progress = ProgressTracker(total_chunks=total_chunks, total_chapters=len(iter_set))
     print(
-        f"[{_ts()}] plan: {len(iter_set)} chapter(s), {total_chunks} chunk(s) total",
+        f"[{_ts()}] plan: backend={plan.backend_mode} "
+        f"{len(iter_set)} chapter(s), {total_chunks} chunk(s) total",
         flush=True,
     )
 
     for eligible_idx, chapter in iter_set:
         result.chapters.append(
             _synthesize_chapter(
-                chapter, eligible_idx, plan, client,
-                result.blocked_chunks, kokoro_box, progress,
+                chapter, eligible_idx, plan, backend,
+                result.blocked_chunks, progress,
             )
         )
 

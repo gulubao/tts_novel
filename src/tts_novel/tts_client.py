@@ -1,4 +1,9 @@
-"""Thin wrapper around google-genai for Gemini TTS, with 429 backoff."""
+"""Thin wrapper around google-genai for Gemini TTS, with 429 backoff.
+
+Raises ``tts_novel.backends.base.BlockedContentError`` on both Gemini block
+surfaces so the composite ``FallbackBackend`` can route to a secondary
+backend without importing anything Gemini-specific.
+"""
 
 import sys
 import time
@@ -7,18 +12,10 @@ from datetime import datetime
 from google import genai
 from google.genai import errors, types
 
+from tts_novel.backends.base import BlockedContentError
 from tts_novel.config import MODEL_ID, ClientSettings
 
-
-class BlockedContentError(RuntimeError):
-    """Raised when Gemini TTS refuses to return audio for a chunk.
-
-    Covers both kinds of block observed in practice:
-      * pre-submission: ``response.candidates is None`` with a
-        ``prompt_feedback.block_reason`` such as ``PROHIBITED_CONTENT``;
-      * post-generation: ``candidate.finish_reason == SAFETY`` with
-        ``content.parts is None``.
-    """
+__all__ = ["BlockedContentError", "TTSClient"]
 
 
 def _ts() -> str:
