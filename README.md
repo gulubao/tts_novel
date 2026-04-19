@@ -153,7 +153,7 @@ This uses Kokoro-82M, an Apache-2.0 local TTS model (~1 GB RAM, CPU-only). No `.
 - One combined `<book-name>.mp3` with every chapter stitched together in order, produced automatically after all chapters are done (pass `--no-combine` to skip combination)
 - A `_pcm_cache/` folder with raw audio bits (you can delete this once everything's done; it's just for the "resume where I left off" feature)
 
-MP3 quality is controlled by the `--mp3-quality` flag (0.0 = highest ~73 kbps, 0.5 = default ~40 kbps, 0.8 = smallest ~33 kbps).
+MP3 quality is controlled by the `--mp3-quality` flag (0.0 = highest quality ~73 kbps, default; 0.5 = balanced ~40 kbps, 0.8 = smallest ~33 kbps).
 
 ## Create audiobook with Storyteller (optional)
 

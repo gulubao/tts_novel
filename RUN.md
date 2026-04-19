@@ -109,7 +109,7 @@ uv run python -m tts_novel.cli \
 | `--no-combine` | off | Skip the final step that produces the combined `<book-stem>.wav` and `<book-stem>.mp3`. Ignored when `--chapter N` is set. |
 | `--local-voice` | `bf_emma` | Kokoro voice id (British female). Used in `auto` fallback and `local` mode. |
 | `--local-lang-code` | `b` | Kokoro language code (`b` = British English, `a` = American English). |
-| `--mp3-quality` | `0.5` | MP3 compression level in [0.0, 0.9]. 0.0 = highest quality (~73 kbps VBR), 0.5 = balanced (~40 kbps), 0.8 = smallest (~33 kbps). |
+| `--mp3-quality` | `0.0` | MP3 compression level in [0.0, 0.9]. 0.0 = highest quality (~73 kbps VBR, default), 0.5 = balanced (~40 kbps), 0.8 = smallest (~33 kbps). |
 
 ## Local-only mode (no Google account, no network, no cost)
 

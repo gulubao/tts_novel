@@ -108,7 +108,7 @@ class ConversionPlan:
     backend_mode: BackendMode = "auto"
     local_voice: str = "bf_emma"
     local_lang_code: str = "b"
-    mp3_quality: float | None = 0.5
+    mp3_quality: float | None = 0.0
 
 
 @dataclass
