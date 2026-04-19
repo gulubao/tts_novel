@@ -1,8 +1,8 @@
 # TTS Novel — turn an e-book into an audiobook
 
-This is a tiny tool that takes an EPUB e-book and reads it using Google's Gemini text-to-speech model `gemini-3.1-flash-tts-preview`.
+This is a tiny tool that takes an EPUB e-book and reads it using Google's Gemini text-to-speech model `gemini-3.1-flash-tts-preview`. When Gemini refuses a passage under its content policy, the tool falls back automatically to a local Kokoro-82M voice so the narration has no silent gaps. You can also run fully on the local model with `--backend local` — no Google account needed.
 
-The default voice is **Sulafat**, english UK female voice, check https://docs.cloud.google.com/text-to-speech/docs/gemini-tts for more details about api configuration.
+The default Gemini voice is **Sulafat**, an English UK female voice; see https://docs.cloud.google.com/text-to-speech/docs/gemini-tts for the full list. The default local voice is **bf_emma** (British female).
 
 ## One-time setup on Mac (about 10 minutes)
 
@@ -110,6 +110,17 @@ uv run python -m tts_novel.cli \
 Female voices you can try: **Sulafat** (warm), **Vindemiatrix** (gentle), **Aoede** (breezy), **Leda** (youthful), **Kore** (firm), **Zephyr** (bright).
 
 Male voices if you prefer: **Charon** (informative), **Puck** (upbeat), **Orus** (firm), **Fenrir** (excitable), **Algieba** (smooth), **Enceladus** (breathy).
+
+### Run without a Google account (fully local)
+
+```bash
+uv run python -m tts_novel.cli \
+    --input "/path/to/your-book.epub" \
+    --output-dir "./output" \
+    --backend local
+```
+
+This uses Kokoro-82M, an Apache-2.0 local TTS model (~1 GB RAM, CPU-only). No `.env` file, no Google auth, no network, no per-token cost. Kokoro needs the system `espeak-ng` binary — run `brew install espeak-ng` first (one-time). Pass `--local-voice af_heart` (or any other Kokoro voice id) to switch voices.
 
 ## What it produces
 

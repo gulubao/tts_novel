@@ -6,11 +6,11 @@
 uv sync
 ```
 
-This creates `.venv` and installs `google-genai`, `ebooklib`, `beautifulsoup4`, `lxml`, `python-dotenv`.
+This creates `.venv` and installs `google-genai`, `ebooklib`, `beautifulsoup4`, `lxml`, `python-dotenv`, `kokoro`, `soundfile`. Kokoro also needs the system `espeak-ng` binary (`brew install espeak-ng` on macOS, `apt install espeak-ng` on Ubuntu). In `--backend local` mode `espeak-ng` is required from the first chunk; in `--backend auto` mode it is only needed when a fallback actually triggers.
 
 ## Environment
 
-`.env` at the project root. Two authentication modes:
+`.env` at the project root. Required only for `--backend auto` (default). Skip this section entirely if you will always run with `--backend local`.
 
 ### Mode A — Vertex AI (uses Google Cloud billing; preferred when you have GCP credits)
 
@@ -60,6 +60,18 @@ uv run python -m tts_novel.cli \
     --voice Sulafat
 ```
 
+## Run entirely on a local model (no Google credentials)
+
+`--backend local` swaps Gemini out for Kokoro-82M. Google auth, network, and per-token costs are all bypassed; the trade-off is a smaller voice catalogue and slightly lower naturalness. Useful for offline runs or when Gemini policy keeps blocking the text you care about.
+
+```bash
+uv run python -m tts_novel.cli \
+    --input <input_epub_file_path> \
+    --output-dir <output_dir_path> \
+    --backend local \
+    --local-voice bf_emma
+```
+
 ## CLI flags
 
 | Flag | Default | Meaning |
@@ -67,12 +79,21 @@ uv run python -m tts_novel.cli \
 | `--input` | required | Path to the EPUB file. |
 | `--output-dir` | `./output` | Directory for per-chapter WAV files. |
 | `--cache-dir` | `<output-dir>/_pcm_cache` | Directory for per-chunk raw PCM cache. |
-| `--voice` | `Sulafat` | Prebuilt voice name used by Gemini TTS. |
-| `--style-preamble` | British RP female narration instruction | Prepended to each synthesis prompt. |
+| `--backend` | `auto` | `auto` = Gemini TTS with local Kokoro-82M fallback on a content-policy block; `local` = Kokoro-82M only (no Google API calls or authentication required). |
+| `--voice` | `Sulafat` | Prebuilt voice name used by Gemini TTS (ignored when `--backend local`). |
+| `--style-preamble` | British RP female narration instruction | Prepended to each Gemini synthesis prompt (ignored when `--backend local`). |
 | `--chapter` | all | Synthesize only the chapter at this 0-based eligible index. |
 | `--min-chapter-chars` | `2000` | Discards short EPUB items (cover, TOC, dedication). |
 | `--max-chars-per-chunk` | `2500` | Soft upper bound on characters per TTS request. |
 | `--no-combine` | off | Skip the final step that produces the combined `<book-stem>.wav`. Ignored when `--chapter N` is set. |
+| `--local-voice` | `bf_emma` | Kokoro voice id (British female). Used in `auto` fallback and `local` mode. |
+| `--local-lang-code` | `b` | Kokoro language code (`b` = British English, `a` = American English). |
+
+## Local-only mode (no Google account, no network, no cost)
+
+Pass `--backend local` to run entirely on Kokoro-82M (Apache-2.0, ~1 GB RAM, CPU-only). The model loads on first chunk, then stays resident for the rest of the run. The `.env` file, Vertex AI, and `GEMINI_API_KEY` are all ignored. Voice and style preamble settings are Gemini-only and have no effect in this mode; use `--local-voice` to switch Kokoro voices.
+
+Prerequisite on macOS: `brew install espeak-ng` (Kokoro's phonemizer shells out to this binary for out-of-vocabulary graphemes).
 
 ## Logic unit tests
 
@@ -84,10 +105,11 @@ uv run python -m pytest tests -q
 
 1. `tts_novel.epub_reader.read_epub` — parses the EPUB, yields ordered non-empty document items as `Chapter(index, title, text)`.
 2. `tts_novel.pipeline.select_chapters` — filters out items shorter than `min_chapter_chars` to produce the eligible list; `--chapter N` picks one element of that list.
-3. For each eligible chapter:
+3. `tts_novel.backends.build_backend` — constructs the synthesis backend dictated by `--backend`: `auto` builds `FallbackBackend(GeminiBackend, KokoroBackend)` (Gemini client settings loaded from `.env` / ADC here, so auth errors surface up-front); `local` builds `KokoroBackend` alone.
+4. For each eligible chapter:
    - If `<output-dir>/chapter_<NNN>.wav` already exists, skip the chapter entirely.
    - Otherwise, `tts_novel.text_chunker.chunk_text` groups paragraphs into chunks ≤ `max_chars_per_chunk`; oversized paragraphs fall back to sentence splits.
-   - For each chunk: if the PCM cache file exists, load it; otherwise call `tts_novel.tts_client.TTSClient.synthesize` and cache the returned PCM.
+   - For each chunk: if the PCM cache file exists, load it; otherwise call `backend.synthesize(chunk)` and cache the returned PCM. A `SynthesisResult.fallback_reason` that is not `None` indicates the primary backend (Gemini) blocked and the secondary (Kokoro) produced the audio; this is recorded as a `BlockedChunkRecord` for the summary.
    - `tts_novel.wav_writer.concat_pcm` + `write_wav` produce the chapter WAV (24 kHz mono 16-bit).
 
 ## Output layout
