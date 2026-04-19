@@ -1,0 +1,9 @@
+.env
+__pycache__
+*.epub
+.memory
+.claude
+output
+CLAUDE.md
+TODO.md
+.DS_Store

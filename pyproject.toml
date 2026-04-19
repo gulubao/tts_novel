@@ -1,0 +1,30 @@
+[project]
+name = "tts-novel"
+version = "0.1.0"
+description = "Convert EPUB files to narrated audio using Gemini TTS."
+readme = "README.md"
+authors = [
+    { name = "gulubao", email = "1047503667@qq.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "beautifulsoup4>=4.14.3",
+    "ebooklib>=0.20",
+    "google-genai>=1.73.1",
+    "kokoro>=0.3.5",
+    "lxml>=6.1.0",
+    "python-dotenv>=1.2.2",
+    "soundfile>=0.12",
+]
+
+[project.scripts]
+tts-novel = "tts_novel.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
