@@ -5,6 +5,25 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
+from tts_novel.backends import BackendMode, TTSBackend, build_backend
+from tts_novel.audio_writer import (
+    combine_audio_files,
+    concat_pcm,
+    duration_seconds,
+    write_mp3,
+    write_wav,
+)
+from tts_novel.config import (
+    CHANNELS,
+    DEFAULT_STYLE_PREAMBLE,
+    DEFAULT_VOICE,
+    SAMPLE_RATE_HZ,
+    SAMPLE_WIDTH_BYTES,
+)
+from tts_novel.cost import CostEstimate, estimate, estimate_from_text_only
+from tts_novel.epub_reader import Chapter, read_epub
+from tts_novel.text_chunker import chunk_text
+
 
 def _ts() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -22,6 +41,9 @@ class ProgressTracker:
     Tracks total chunks planned across the whole run, how many are done, and
     a rolling mean of synthesis wall-time for ETA. Cache hits and chapter-level
     skips bump the counter without contributing to the synth-time mean.
+    Gemini cost is accumulated per fresh Gemini chunk and displayed in the
+    progress line; cached chunks and Kokoro fallbacks contribute ``$0`` to the
+    running tally because no billable API call occurred.
     """
 
     total_chunks: int
@@ -33,6 +55,10 @@ class ProgressTracker:
     synth_count: int = 0
     cached_hits: int = 0
     skipped_chapter_chunks: int = 0
+    gemini_cost_usd: float = 0.0
+    gemini_input_tokens: int = 0
+    gemini_audio_tokens: int = 0
+    gemini_chunks: int = 0
 
     def tick(
         self,
@@ -41,6 +67,7 @@ class ProgressTracker:
         synth_seconds: float | None = None,
         chapter_done: bool = False,
         kind: str = "",
+        cost: CostEstimate | None = None,
     ) -> None:
         self.chunks_done += n
         if kind == "cached":
@@ -50,6 +77,11 @@ class ProgressTracker:
         if synth_seconds is not None and synth_seconds > 0:
             self.synth_time_total += synth_seconds
             self.synth_count += 1
+        if cost is not None:
+            self.gemini_cost_usd += cost.total_usd
+            self.gemini_input_tokens += cost.input_tokens
+            self.gemini_audio_tokens += cost.audio_tokens
+            self.gemini_chunks += 1
         if chapter_done:
             self.chapters_done += 1
         self._print(kind)
@@ -65,33 +97,20 @@ class ProgressTracker:
         else:
             eta = "?"
             avg_str = "n/a"
+        cost_str = (
+            f" cost ~${self.gemini_cost_usd:.4f}"
+            if self.gemini_cost_usd > 0
+            else ""
+        )
         print(
             f"[{_ts()}] progress: "
             f"chunks {self.chunks_done}/{self.total_chunks} ({pct:5.1f}%) "
             f"chapters {self.chapters_done}/{self.total_chapters} "
             f"avg-synth {avg_str} elapsed {_fmt_hms(elapsed)} ETA {eta}"
+            f"{cost_str}"
             + (f" [{kind}]" if kind else ""),
             flush=True,
         )
-
-
-from tts_novel.backends import BackendMode, TTSBackend, build_backend
-from tts_novel.audio_writer import (
-    combine_audio_files,
-    concat_pcm,
-    duration_seconds,
-    write_mp3,
-    write_wav,
-)
-from tts_novel.config import (
-    CHANNELS,
-    DEFAULT_STYLE_PREAMBLE,
-    DEFAULT_VOICE,
-    SAMPLE_RATE_HZ,
-    SAMPLE_WIDTH_BYTES,
-)
-from tts_novel.epub_reader import Chapter, read_epub
-from tts_novel.text_chunker import chunk_text
 
 
 @dataclass
@@ -121,6 +140,10 @@ class ChunkRecord:
     pcm_bytes: int
     cached: bool
     cache_path: Path
+    backend: str = ""
+    billed_input_chars: int = 0
+    audio_seconds: float = 0.0
+    cost_usd: float = 0.0
 
 
 @dataclass
@@ -134,6 +157,7 @@ class ChapterResult:
     seconds: float
     chunks: list[ChunkRecord] = field(default_factory=list)
     skipped_existing: bool = False
+    gemini_cost_usd: float = 0.0
 
 
 @dataclass
@@ -154,6 +178,10 @@ class ConversionResult:
     combined_mp3: Path | None = None
     combined_mp3_bytes: int = 0
     blocked_chunks: list[BlockedChunkRecord] = field(default_factory=list)
+    gemini_cost_usd: float = 0.0
+    gemini_input_tokens: int = 0
+    gemini_audio_tokens: int = 0
+    gemini_chunks: int = 0
 
     @property
     def total_pcm_bytes(self) -> int:
@@ -237,18 +265,42 @@ def _synthesize_chapter(
     for ci, chunk in enumerate(chunks):
         cache_path = plan.cache_dir / f"ch{chapter.index:03d}_c{ci:03d}.pcm"
         cached = cache_path.exists()
+        chunk_cost: CostEstimate | None = None
+        rec_backend = ""
+        rec_billed_chars = 0
+        rec_audio_seconds = 0.0
+        rec_cost_usd = 0.0
         if cached:
             pcm = cache_path.read_bytes()
             status = f"cached ({len(pcm):,} bytes)"
             progress_kind = "cached"
             synth_seconds: float | None = None
+            rec_backend = "cached"
         else:
             result = backend.synthesize(chunk)
             pcm = result.pcm
             cache_path.write_bytes(pcm)
             synth_seconds = result.seconds
             progress_kind = result.backend
-            status = f"{result.backend:6s} ({len(pcm):,} bytes in {result.seconds:.1f}s)"
+            chunk_audio_seconds = duration_seconds(len(pcm))
+            rec_backend = result.backend
+            rec_audio_seconds = chunk_audio_seconds
+            if result.backend == "gemini":
+                rec_billed_chars = len(plan.style_preamble) + len(chunk)
+                chunk_cost = estimate(rec_billed_chars, chunk_audio_seconds)
+                rec_cost_usd = chunk_cost.total_usd
+                status = (
+                    f"{result.backend:6s} ({len(pcm):,} bytes in {result.seconds:.1f}s, "
+                    f"~{chunk_audio_seconds:.1f}s audio, "
+                    f"~${chunk_cost.total_usd:.4f} "
+                    f"[in {chunk_cost.input_tokens}t ${chunk_cost.input_usd:.5f} "
+                    f"+ out {chunk_cost.audio_tokens}t ${chunk_cost.output_usd:.5f}])"
+                )
+            else:
+                status = (
+                    f"{result.backend:6s} ({len(pcm):,} bytes in {result.seconds:.1f}s, "
+                    f"~{chunk_audio_seconds:.1f}s audio, local=$0.0000)"
+                )
             if result.fallback_reason is not None:
                 status += f" — primary blocked: {result.fallback_reason}"
                 blocked_sink.append(
@@ -276,19 +328,31 @@ def _synthesize_chapter(
                 pcm_bytes=len(pcm),
                 cached=cached,
                 cache_path=cache_path,
+                backend=rec_backend,
+                billed_input_chars=rec_billed_chars,
+                audio_seconds=rec_audio_seconds,
+                cost_usd=rec_cost_usd,
             )
         )
-        progress.tick(synth_seconds=synth_seconds, kind=progress_kind)
+        progress.tick(synth_seconds=synth_seconds, kind=progress_kind, cost=chunk_cost)
 
     full_pcm = concat_pcm(pcm_parts)
     write_wav(wav_path, full_pcm)
     write_mp3(mp3_path, full_pcm, mp3_quality=plan.mp3_quality)
 
     mp3_bytes = mp3_path.stat().st_size
+    chapter_cost_usd = sum(r.cost_usd for r in records)
+    fresh_gemini = sum(1 for r in records if r.backend == "gemini")
+    cost_tail = (
+        f" gemini=${chapter_cost_usd:.4f} ({fresh_gemini} fresh chunk(s))"
+        if chapter_cost_usd > 0
+        else ""
+    )
     print(
         f"[{_ts()}] chapter {eligible_index:03d} doc={chapter.index:03d} "
         f"DONE  ({len(full_pcm):,} pcm bytes, "
-        f"{duration_seconds(len(full_pcm)):.1f}s audio) -> {wav_path.name}, {mp3_path.name} ({mp3_bytes:,} bytes)",
+        f"{duration_seconds(len(full_pcm)):.1f}s audio) -> {wav_path.name}, {mp3_path.name} ({mp3_bytes:,} bytes)"
+        f"{cost_tail}",
         flush=True,
     )
 
@@ -302,6 +366,7 @@ def _synthesize_chapter(
         seconds=duration_seconds(len(full_pcm)),
         chunks=records,
         skipped_existing=False,
+        gemini_cost_usd=chapter_cost_usd,
     )
 
 
@@ -418,14 +483,29 @@ def convert(plan: ConversionPlan, backend: TTSBackend | None = None) -> Conversi
     result = ConversionResult(output_dir=plan.output_dir)
 
     total_chunks = 0
+    total_text_chars = 0
     for _, chapter in iter_set:
-        total_chunks += len(chunk_text(chapter.text, max_chars=plan.max_chars_per_chunk))
+        chunk_list = chunk_text(chapter.text, max_chars=plan.max_chars_per_chunk)
+        total_chunks += len(chunk_list)
+        total_text_chars += sum(len(c) for c in chunk_list)
     progress = ProgressTracker(total_chunks=total_chunks, total_chapters=len(iter_set))
     print(
         f"[{_ts()}] plan: backend={plan.backend_mode} "
         f"{len(iter_set)} chapter(s), {total_chunks} chunk(s) total",
         flush=True,
     )
+    if plan.backend_mode == "auto":
+        preamble_chars = len(plan.style_preamble) * total_chunks
+        upper_bound_chars = total_text_chars + preamble_chars
+        planning_cost = estimate_from_text_only(upper_bound_chars)
+        print(
+            f"[{_ts()}] plan: Gemini cost estimate if all chunks synthesized fresh: "
+            f"~${planning_cost.total_usd:.2f} "
+            f"(input {planning_cost.input_tokens:,}t ~${planning_cost.input_usd:.4f} "
+            f"+ output ~{planning_cost.audio_tokens:,}t ~${planning_cost.output_usd:.2f}; "
+            f"assumes ~15 chars/s narration, actual billed usage may differ)",
+            flush=True,
+        )
 
     for eligible_idx, chapter in iter_set:
         result.chapters.append(
@@ -434,6 +514,11 @@ def convert(plan: ConversionPlan, backend: TTSBackend | None = None) -> Conversi
                 result.blocked_chunks, progress,
             )
         )
+
+    result.gemini_cost_usd = progress.gemini_cost_usd
+    result.gemini_input_tokens = progress.gemini_input_tokens
+    result.gemini_audio_tokens = progress.gemini_audio_tokens
+    result.gemini_chunks = progress.gemini_chunks
 
     _combine_chapter_wavs(plan, result)
     return result

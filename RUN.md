@@ -117,12 +117,6 @@ Pass `--backend local` to run entirely on Kokoro-82M (Apache-2.0, ~1 GB RAM, CPU
 
 Prerequisite on macOS: `brew install espeak-ng` (Kokoro's phonemizer shells out to this binary for out-of-vocabulary graphemes).
 
-## Logic unit tests
-
-```bash
-uv run python -m pytest tests -q
-```
-
 ## Main pipeline (execution order)
 
 1. `tts_novel.epub_reader.read_epub` — parses the EPUB, yields ordered non-empty document items as `Chapter(index, title, text)`.

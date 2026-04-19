@@ -130,10 +130,12 @@ def main() -> None:
         fresh = sum(1 for r in ch.chunks if not r.cached)
         cached = sum(1 for r in ch.chunks if r.cached)
         mp3_bytes = ch.output_mp3.stat().st_size if ch.output_mp3.exists() else 0
+        cost_tail = f"  gemini=${ch.gemini_cost_usd:.4f}" if ch.gemini_cost_usd > 0 else ""
         print(
             f"  [{ch.eligible_index:03d}] doc={ch.doc_index:03d} {marker} "
             f"{ch.seconds:>7.2f}s  chunks={len(ch.chunks)} "
             f"(synth={fresh}, cached={cached})  {ch.output_wav.name} + {ch.output_mp3.name} ({mp3_bytes:,} bytes)"
+            f"{cost_tail}"
         )
 
     if result.combined_wav is not None:
@@ -147,6 +149,23 @@ def main() -> None:
             f"Combined MP3: {result.combined_mp3.name} "
             f"({result.combined_mp3_bytes:,} bytes)"
         )
+
+    if result.gemini_chunks > 0:
+        input_usd = result.gemini_input_tokens * 1.0 / 1_000_000
+        output_usd = result.gemini_audio_tokens * 20.0 / 1_000_000
+        print(
+            f"Gemini API cost (this run, {result.gemini_chunks} fresh chunk(s)): "
+            f"~${result.gemini_cost_usd:.4f}  "
+            f"[input {result.gemini_input_tokens:,}t ${input_usd:.4f} + "
+            f"output {result.gemini_audio_tokens:,}t ${output_usd:.4f}]"
+        )
+        print(
+            "  Rates: text $1.00 / 1M tokens, audio $20.00 / 1M tokens "
+            "(4 chars ≈ 1 token, 25 audio tokens per second of audio). "
+            "Estimate only; reconcile against the Cloud Billing invoice."
+        )
+    else:
+        print("Gemini API cost (this run): $0.0000 (all chunks cached or local backend).")
 
     if result.blocked_chunks:
         print(f"Blocked chunks (filled by fallback): {len(result.blocked_chunks)}")
