@@ -11,7 +11,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="tts-novel",
         description=(
-            "Convert an EPUB file to one narrated WAV per chapter. Default backend "
+            "Convert an EPUB file to one narrated WAV and MP3 per chapter. Default backend "
             "is 'auto' (Gemini TTS with local Kokoro-82M fallback on content-policy "
             "blocks); '--backend local' bypasses Gemini entirely."
         ),
@@ -21,7 +21,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--output-dir",
         type=Path,
         default=Path("./output"),
-        help="Directory for per-chapter WAV files (default: ./output).",
+        help="Directory for per-chapter WAV and MP3 files (default: ./output).",
     )
     parser.add_argument(
         "--cache-dir",
@@ -70,8 +70,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-combine",
         action="store_true",
         help=(
-            "Skip the final step that stitches every chapter WAV into a single "
-            "<epub-stem>.wav file under --output-dir. Only relevant when synthesising "
+            "Skip the final step that stitches every chapter WAV and MP3 into single "
+            "<epub-stem>.wav and <epub-stem>.mp3 files under --output-dir. Only relevant when synthesising "
             "all chapters (ignored with --chapter N)."
         ),
     )
@@ -84,6 +84,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--local-lang-code",
         default="b",
         help="Kokoro language code (default: b — British English).",
+    )
+    parser.add_argument(
+        "--mp3-quality",
+        type=float,
+        default=0.5,
+        help=(
+            "MP3 compression level in [0.0, 0.9]. 0.0 = highest quality (~73 kbps VBR), "
+            "0.5 = balanced (~40 kbps), 0.8 = smallest (~33 kbps). Default: 0.5."
+        ),
     )
     return parser
 
@@ -107,6 +116,7 @@ def main() -> None:
         backend_mode=args.backend,
         local_voice=args.local_voice,
         local_lang_code=args.local_lang_code,
+        mp3_quality=args.mp3_quality,
     )
 
     result = convert(plan)
@@ -119,17 +129,23 @@ def main() -> None:
         marker = "skip" if ch.skipped_existing else "new "
         fresh = sum(1 for r in ch.chunks if not r.cached)
         cached = sum(1 for r in ch.chunks if r.cached)
+        mp3_bytes = ch.output_mp3.stat().st_size if ch.output_mp3.exists() else 0
         print(
             f"  [{ch.eligible_index:03d}] doc={ch.doc_index:03d} {marker} "
             f"{ch.seconds:>7.2f}s  chunks={len(ch.chunks)} "
-            f"(synth={fresh}, cached={cached})  file={ch.output_wav.name}"
+            f"(synth={fresh}, cached={cached})  {ch.output_wav.name} + {ch.output_mp3.name} ({mp3_bytes:,} bytes)"
         )
 
     if result.combined_wav is not None:
         print(
-            f"Combined   : {result.combined_wav.name} "
+            f"Combined WAV: {result.combined_wav.name} "
             f"({result.combined_pcm_bytes:,} PCM bytes, "
             f"{result.combined_pcm_bytes / (24000 * 2):.2f} s)"
+        )
+    if result.combined_mp3 is not None:
+        print(
+            f"Combined MP3: {result.combined_mp3.name} "
+            f"({result.combined_mp3_bytes:,} bytes)"
         )
 
     if result.blocked_chunks:

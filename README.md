@@ -4,6 +4,8 @@ This is a tiny tool that takes an EPUB e-book and reads it using Google's Gemini
 
 The default Gemini voice is **Sulafat**, an English UK female voice; see https://docs.cloud.google.com/text-to-speech/docs/gemini-tts for the full list. The default local voice is **bf_emma** (British female).
 
+**Output format:** The tool produces both WAV and MP3 files for each chapter and for the combined audiobook. MP3 files are roughly 10-15% the size of WAV files (e.g., a 12-minute chapter might be 20 MB as WAV, 2-3 MB as MP3 at the default quality setting).
+
 ## One-time setup on Mac (about 10 minutes)
 
 ### 1.
@@ -58,6 +60,27 @@ GEMINI_API_KEY=unused
 
 ```bash
 uv sync
+```
+
+### Switch to a different Google Cloud project
+
+If you need to switch to another Google Cloud account or project (e.g., to use a different billing account):
+
+```bash
+# 1. Sign in with the new account
+gcloud auth login
+
+# 2. Update application default credentials
+gcloud auth application-default login
+
+# 3. Set the new quota project
+gcloud auth application-default set-quota-project YOUR_NEW_PROJECT_ID
+
+# 4. Enable Vertex AI API on the new project
+gcloud services enable aiplatform.googleapis.com --project YOUR_NEW_PROJECT_ID
+
+# 5. Update your .env file with the new project ID
+# Edit .env and change GOOGLE_CLOUD_PROJECT to your new project
 ```
 
 ## Using it
@@ -124,8 +147,10 @@ This uses Kokoro-82M, an Apache-2.0 local TTS model (~1 GB RAM, CPU-only). No `.
 
 ## What it produces
 
-- One `.wav` file per chapter, 24 kHz mono — good audio quality, not super compressed
-- One combined `<book-name>.wav` with every chapter stitched together in order, produced automatically after all chapters are done (pass `--no-combine` to skip it)
+- One `.wav` file per chapter, 24 kHz mono — lossless audio quality
+- One `.mp3` file per chapter — compressed, roughly 10-15% of WAV size
+- One combined `<book-name>.wav` with every chapter stitched together in order, produced automatically after all chapters are done
+- One combined `<book-name>.mp3` with every chapter stitched together in order, produced automatically after all chapters are done (pass `--no-combine` to skip combination)
 - A `_pcm_cache/` folder with raw audio bits (you can delete this once everything's done; it's just for the "resume where I left off" feature)
 
-WAV files are large — a whole novel is typically 1–2 GB for the combined file and a similar total across the per-chapter files. If you want smaller files, open a WAV in Apple's Music app (or use a tool like [Audacity](https://www.audacityteam.org/)) and export as MP3.
+MP3 quality is controlled by the `--mp3-quality` flag (0.0 = highest ~73 kbps, 0.5 = default ~40 kbps, 0.8 = smallest ~33 kbps).

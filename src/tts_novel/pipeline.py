@@ -1,7 +1,6 @@
-"""Pipeline orchestrator: EPUB path to one WAV per chapter with PCM cache."""
+"""Pipeline orchestrator: EPUB path to WAV + MP3 per chapter with PCM cache."""
 
 import time
-import wave
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -77,6 +76,13 @@ class ProgressTracker:
 
 
 from tts_novel.backends import BackendMode, TTSBackend, build_backend
+from tts_novel.audio_writer import (
+    combine_audio_files,
+    concat_pcm,
+    duration_seconds,
+    write_mp3,
+    write_wav,
+)
 from tts_novel.config import (
     CHANNELS,
     DEFAULT_STYLE_PREAMBLE,
@@ -86,7 +92,6 @@ from tts_novel.config import (
 )
 from tts_novel.epub_reader import Chapter, read_epub
 from tts_novel.text_chunker import chunk_text
-from tts_novel.wav_writer import concat_pcm, duration_seconds, write_wav
 
 
 @dataclass
@@ -103,6 +108,7 @@ class ConversionPlan:
     backend_mode: BackendMode = "auto"
     local_voice: str = "bf_emma"
     local_lang_code: str = "b"
+    mp3_quality: float | None = 0.5
 
 
 @dataclass
@@ -123,6 +129,7 @@ class ChapterResult:
     doc_index: int
     title: str
     output_wav: Path
+    output_mp3: Path
     pcm_bytes: int
     seconds: float
     chunks: list[ChunkRecord] = field(default_factory=list)
@@ -144,6 +151,8 @@ class ConversionResult:
     chapters: list[ChapterResult] = field(default_factory=list)
     combined_wav: Path | None = None
     combined_pcm_bytes: int = 0
+    combined_mp3: Path | None = None
+    combined_mp3_bytes: int = 0
     blocked_chunks: list[BlockedChunkRecord] = field(default_factory=list)
 
     @property
@@ -176,6 +185,10 @@ def _chapter_wav_path(output_dir: Path, eligible_index: int) -> Path:
     return output_dir / f"chapter_{eligible_index:03d}.wav"
 
 
+def _chapter_mp3_path(output_dir: Path, eligible_index: int) -> Path:
+    return output_dir / f"chapter_{eligible_index:03d}.mp3"
+
+
 def _synthesize_chapter(
     chapter: Chapter,
     eligible_index: int,
@@ -185,14 +198,17 @@ def _synthesize_chapter(
     progress: ProgressTracker,
 ) -> ChapterResult:
     wav_path = _chapter_wav_path(plan.output_dir, eligible_index)
+    mp3_path = _chapter_mp3_path(plan.output_dir, eligible_index)
 
-    if wav_path.exists():
-        size = wav_path.stat().st_size
-        pcm_bytes = max(size - 44, 0)  # subtract WAV header
+    if wav_path.exists() and mp3_path.exists():
+        wav_size = wav_path.stat().st_size
+        pcm_bytes = max(wav_size - 44, 0)
+        mp3_size = mp3_path.stat().st_size
         chapter_chunks = len(chunk_text(chapter.text, max_chars=plan.max_chars_per_chunk))
         print(
             f"[{_ts()}] chapter {eligible_index:03d} doc={chapter.index:03d} "
-            f"SKIP (existing {wav_path.name}, {pcm_bytes:,} pcm bytes)",
+            f"SKIP (existing {wav_path.name} {mp3_path.name}, "
+            f"{pcm_bytes:,} pcm bytes, {mp3_size:,} mp3 bytes)",
             flush=True,
         )
         progress.tick(n=chapter_chunks, chapter_done=True, kind="chapter_skip")
@@ -201,6 +217,7 @@ def _synthesize_chapter(
             doc_index=chapter.index,
             title=chapter.title,
             output_wav=wav_path,
+            output_mp3=mp3_path,
             pcm_bytes=pcm_bytes,
             seconds=duration_seconds(pcm_bytes),
             chunks=[],
@@ -265,11 +282,13 @@ def _synthesize_chapter(
 
     full_pcm = concat_pcm(pcm_parts)
     write_wav(wav_path, full_pcm)
+    write_mp3(mp3_path, full_pcm, mp3_quality=plan.mp3_quality)
 
+    mp3_bytes = mp3_path.stat().st_size
     print(
         f"[{_ts()}] chapter {eligible_index:03d} doc={chapter.index:03d} "
         f"DONE  ({len(full_pcm):,} pcm bytes, "
-        f"{duration_seconds(len(full_pcm)):.1f}s audio) -> {wav_path.name}",
+        f"{duration_seconds(len(full_pcm)):.1f}s audio) -> {wav_path.name}, {mp3_path.name} ({mp3_bytes:,} bytes)",
         flush=True,
     )
 
@@ -278,6 +297,7 @@ def _synthesize_chapter(
         doc_index=chapter.index,
         title=chapter.title,
         output_wav=wav_path,
+        output_mp3=mp3_path,
         pcm_bytes=len(full_pcm),
         seconds=duration_seconds(len(full_pcm)),
         chunks=records,
@@ -289,71 +309,84 @@ def _combined_wav_path(plan: ConversionPlan) -> Path:
     return plan.output_dir / f"{plan.epub_path.stem}.wav"
 
 
+def _combined_mp3_path(plan: ConversionPlan) -> Path:
+    return plan.output_dir / f"{plan.epub_path.stem}.mp3"
+
+
 def _combine_chapter_wavs(plan: ConversionPlan, result: ConversionResult) -> None:
-    """Stitch every chapter WAV into a single book-level WAV.
+    """Stitch every chapter WAV and MP3 into single book-level files.
 
     No-op when running in single-chapter mode, when combining is disabled,
-    when any chapter WAV is missing, or when the combined file already exists.
+    when any chapter file is missing, or when the combined file already exists.
     """
     if plan.chapter_index is not None or not plan.combine:
         return
     if not result.chapters:
         return
 
-    book_path = _combined_wav_path(plan)
-    missing = [ch for ch in result.chapters if not ch.output_wav.exists()]
-    if missing:
+    wav_book_path = _combined_wav_path(plan)
+    mp3_book_path = _combined_mp3_path(plan)
+
+    missing_wav = [ch for ch in result.chapters if not ch.output_wav.exists()]
+    missing_mp3 = [ch for ch in result.chapters if not ch.output_mp3.exists()]
+
+    if missing_wav or missing_mp3:
         print(
-            f"[{_ts()}] book   SKIP ({len(missing)} chapter WAV(s) missing; "
+            f"[{_ts()}] book   SKIP ({len(missing_wav)} WAV(s), {len(missing_mp3)} MP3(s) missing; "
             f"not combining partial output)",
             flush=True,
         )
         return
 
-    if book_path.exists():
-        size = book_path.stat().st_size
-        pcm_bytes = max(size - 44, 0)
+    wav_exists = wav_book_path.exists()
+    mp3_exists = mp3_book_path.exists()
+
+    if wav_exists and mp3_exists:
+        wav_size = wav_book_path.stat().st_size
+        mp3_size = mp3_book_path.stat().st_size
+        wav_pcm_bytes = max(wav_size - 44, 0)
         print(
-            f"[{_ts()}] book   SKIP (existing {book_path.name}, {pcm_bytes:,} pcm bytes)",
+            f"[{_ts()}] book   SKIP (existing {wav_book_path.name}, {wav_pcm_bytes:,} pcm bytes; "
+            f"{mp3_book_path.name}, {mp3_size:,} bytes)",
             flush=True,
         )
-        result.combined_wav = book_path
-        result.combined_pcm_bytes = pcm_bytes
+        result.combined_wav = wav_book_path
+        result.combined_pcm_bytes = wav_pcm_bytes
+        result.combined_mp3 = mp3_book_path
+        result.combined_mp3_bytes = mp3_size
         return
 
-    print(
-        f"[{_ts()}] book   COMBINE ({len(result.chapters)} chapter WAVs) -> {book_path.name}",
-        flush=True,
-    )
+    chapter_wav_paths = [ch.output_wav for ch in result.chapters]
+    chapter_mp3_paths = [ch.output_mp3 for ch in result.chapters]
 
-    total_frames = 0
-    book_path.parent.mkdir(parents=True, exist_ok=True)
-    with wave.open(str(book_path), "wb") as out:
-        out.setnchannels(CHANNELS)
-        out.setsampwidth(SAMPLE_WIDTH_BYTES)
-        out.setframerate(SAMPLE_RATE_HZ)
-        for ch in result.chapters:
-            with wave.open(str(ch.output_wav), "rb") as wf:
-                if (
-                    wf.getnchannels() != CHANNELS
-                    or wf.getsampwidth() != SAMPLE_WIDTH_BYTES
-                    or wf.getframerate() != SAMPLE_RATE_HZ
-                ):
-                    raise RuntimeError(
-                        f"Chapter WAV {ch.output_wav} has incompatible format; "
-                        f"expected {CHANNELS}ch/{SAMPLE_WIDTH_BYTES}B/{SAMPLE_RATE_HZ}Hz"
-                    )
-                out.writeframes(wf.readframes(wf.getnframes()))
-                total_frames += wf.getnframes()
+    if not wav_exists:
+        print(
+            f"[{_ts()}] book   COMBINE ({len(result.chapters)} chapter WAVs) -> {wav_book_path.name}",
+            flush=True,
+        )
+        combine_audio_files(chapter_wav_paths, wav_book_path, format="wav")
+        wav_pcm_bytes = wav_book_path.stat().st_size - 44
+        result.combined_wav = wav_book_path
+        result.combined_pcm_bytes = wav_pcm_bytes
+        print(
+            f"[{_ts()}] book   DONE  ({result.combined_pcm_bytes:,} pcm bytes, "
+            f"{duration_seconds(result.combined_pcm_bytes):.1f}s audio) -> {wav_book_path.name}",
+            flush=True,
+        )
 
-    total_pcm_bytes = total_frames * CHANNELS * SAMPLE_WIDTH_BYTES
-    result.combined_wav = book_path
-    result.combined_pcm_bytes = total_pcm_bytes
-    print(
-        f"[{_ts()}] book   DONE  ({total_pcm_bytes:,} pcm bytes, "
-        f"{duration_seconds(total_pcm_bytes):.1f}s audio) -> {book_path.name}",
-        flush=True,
-    )
+    if not mp3_exists:
+        print(
+            f"[{_ts()}] book   COMBINE ({len(result.chapters)} chapter MP3s) -> {mp3_book_path.name}",
+            flush=True,
+        )
+        combine_audio_files(chapter_mp3_paths, mp3_book_path, format="mp3", mp3_quality=plan.mp3_quality)
+        mp3_bytes = mp3_book_path.stat().st_size
+        result.combined_mp3 = mp3_book_path
+        result.combined_mp3_bytes = mp3_bytes
+        print(
+            f"[{_ts()}] book   DONE  ({mp3_bytes:,} mp3 bytes) -> {mp3_book_path.name}",
+            flush=True,
+        )
 
 
 def convert(plan: ConversionPlan, backend: TTSBackend | None = None) -> ConversionResult:
