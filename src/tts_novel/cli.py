@@ -63,8 +63,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--max-chars-per-chunk",
         type=int,
-        default=2500,
-        help="Soft upper bound on characters per TTS request.",
+        default=833,
+        help="Soft upper bound on characters per TTS request (reduced to 1/3 of original 2500 to improve Gemini TTS output quality; smaller chunks maintain consistent quality throughout).",
     )
     parser.add_argument(
         "--no-combine",

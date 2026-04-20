@@ -25,7 +25,7 @@ def _split_long_paragraph(paragraph: str, max_chars: int) -> list[str]:
     return out
 
 
-def chunk_text(text: str, max_chars: int = 2500) -> list[str]:
+def chunk_text(text: str, max_chars: int = 833) -> list[str]:
     if max_chars <= 0:
         raise ValueError("max_chars must be positive")
 

@@ -105,7 +105,7 @@ uv run python -m tts_novel.cli \
 | `--style-preamble` | British RP female narration instruction | Prepended to each Gemini synthesis prompt (ignored when `--backend local`). |
 | `--chapter` | all | Synthesize only the chapter at this 0-based eligible index. |
 | `--min-chapter-chars` | `2000` | Discards short EPUB items (cover, TOC, dedication). |
-| `--max-chars-per-chunk` | `2500` | Soft upper bound on characters per TTS request. |
+| `--max-chars-per-chunk` | `833` | Soft upper bound on characters per TTS request (reduced to 1/3 of original 2500 to improve Gemini TTS output quality; smaller chunks maintain consistent quality throughout). |
 | `--no-combine` | off | Skip the final step that produces the combined `<book-stem>.wav` and `<book-stem>.mp3`. Ignored when `--chapter N` is set. |
 | `--local-voice` | `bf_emma` | Kokoro voice id (British female). Used in `auto` fallback and `local` mode. |
 | `--local-lang-code` | `b` | Kokoro language code (`b` = British English, `a` = American English). |
@@ -124,7 +124,7 @@ Prerequisite on macOS: `brew install espeak-ng` (Kokoro's phonemizer shells out 
 3. `tts_novel.backends.build_backend` — constructs the synthesis backend dictated by `--backend`: `auto` builds `FallbackBackend(GeminiBackend, KokoroBackend)` (Gemini client settings loaded from `.env` / ADC here, so auth errors surface up-front); `local` builds `KokoroBackend` alone.
 4. For each eligible chapter:
    - If `<output-dir>/chapter_<NNN>.wav` already exists, skip the chapter entirely.
-   - Otherwise, `tts_novel.text_chunker.chunk_text` groups paragraphs into chunks ≤ `max_chars_per_chunk`; oversized paragraphs fall back to sentence splits.
+   - Otherwise, `tts_novel.text_chunker.chunk_text` groups paragraphs into chunks ≤ `max_chars_per_chunk` (default: 833 chars, 1/3 of original 2500 for improved Gemini TTS quality); oversized paragraphs fall back to sentence splits.
    - For each chunk: if the PCM cache file exists, load it; otherwise call `backend.synthesize(chunk)` and cache the returned PCM. A `SynthesisResult.fallback_reason` that is not `None` indicates the primary backend (Gemini) blocked and the secondary (Kokoro) produced the audio; this is recorded as a `BlockedChunkRecord` for the summary.
    - `tts_novel.wav_writer.concat_pcm` + `write_wav` produce the chapter WAV (24 kHz mono 16-bit).
 
