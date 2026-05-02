@@ -43,6 +43,27 @@ class ClientSettings:
     location: str
 
 
+def _adc_credentials_exist() -> bool:
+    explicit_credentials = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
+    if explicit_credentials:
+        return Path(explicit_credentials).expanduser().exists()
+    return (Path.home() / ".config" / "gcloud" / "application_default_credentials.json").exists()
+
+
+def load_gcloud_adc_client_settings_if_available() -> ClientSettings | None:
+    """Load Vertex AI ADC settings only when local ADC credentials are present."""
+    load_dotenv(PROJECT_ROOT / ".env")
+    project = os.environ.get("GOOGLE_CLOUD_PROJECT", "").strip()
+    if not project or not _adc_credentials_exist():
+        return None
+    return ClientSettings(
+        use_vertex=True,
+        api_key=None,
+        project=project,
+        location=os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1"),
+    )
+
+
 def load_client_settings() -> ClientSettings:
     load_dotenv(PROJECT_ROOT / ".env")
     cloud_api_key = os.environ.get("GOOGLE_CLOUD_API_KEY", "").strip()
@@ -66,6 +87,17 @@ def load_client_settings() -> ClientSettings:
             project=os.environ["GOOGLE_CLOUD_PROJECT"],
             location=os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1"),
         )
+    return ClientSettings(
+        use_vertex=False,
+        api_key=os.environ["GEMINI_API_KEY"],
+        project=None,
+        location="",
+    )
+
+
+def load_batch_client_settings() -> ClientSettings:
+    """Load Gemini Developer API credentials for inline Batch API jobs."""
+    load_dotenv(PROJECT_ROOT / ".env")
     return ClientSettings(
         use_vertex=False,
         api_key=os.environ["GEMINI_API_KEY"],

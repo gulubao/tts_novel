@@ -1,6 +1,6 @@
 # TTS Novel — turn an e-book into an audiobook
 
-This is a tiny tool that takes an EPUB e-book and reads it using Google's Gemini text-to-speech model `gemini-3.1-flash-tts-preview`. When Gemini refuses a passage under its content policy, the tool falls back automatically to a local Kokoro-82M voice so the narration has no silent gaps. You can also run fully on the local model with `--backend local` — no Google account needed.
+This is a tiny tool that takes an EPUB e-book and reads it using Google's Gemini text-to-speech model `gemini-2.5-flash-preview-tts` by default. It submits missing chunks through Gemini Batch API one chapter at a time, then stitches chapter WAV and MP3 files. When Gemini refuses a passage under its content policy, the tool falls back automatically to a local Kokoro-82M voice so the narration has no silent gaps. You can also run fully on the local model with `--backend local` — no Google account needed.
 
 The default Gemini voice is **Sulafat**, an English UK female voice; see https://docs.cloud.google.com/text-to-speech/docs/gemini-tts for the full list. The default local voice is **bf_emma** (British female).
 
@@ -16,11 +16,7 @@ brew install uv
 
 If `brew` itself isn't installed yet, get it first from https://brew.sh — paste the single command from their front page.
 
-### 2. Configure Google Cloud billing
-
-Use a Google Cloud API key for Vertex AI when possible. The Google Cloud project behind the key must have billing enabled and the Vertex AI API enabled.
-
-### 3. Download this tool
+### 2. Download this tool
 
 ```bash
 cd ~/Documents
@@ -33,6 +29,16 @@ Create a file called `.env` in that folder:
 ```bash
 touch .env
 ```
+
+### 3. Configure Gemini credentials
+
+Default batch mode requires a Gemini Developer API key:
+
+```.env
+GEMINI_API_KEY=your-gemini-api-key
+```
+
+For Vertex AI billing, use realtime mode with a Google Cloud API key. The Google Cloud project behind the key must have billing enabled and the Vertex AI API enabled:
 
 ```.env
 GOOGLE_CLOUD_API_KEY=your-google-cloud-api-key
@@ -98,16 +104,17 @@ uv run python -m tts_novel.cli \
     --output-dir "./output"
 ```
 
-It will go chapter by chapter. You'll see progress lines like:
+It will go chapter by chapter. Existing chapter WAV+MP3 pairs are skipped. You'll see progress lines like:
 
 ```
-chapter 003 doc=008 START (5 chunks, 11,320 chars)
-  [chapter 003 doc=008] chunk 1/5 chars=2415 synth (7,603,200 bytes in 70.8s)
+chapter 003 doc=008 START (57 chunks, 11,320 chars)
+chapter 003 doc=008 BATCH (57 missing chunk(s), 1 job(s))
+batch: submitted batches/123456 (57 request(s), tts-novel-ch003-part001-of-001)
   ...
-chapter 003 doc=008 DONE (34,037,760 pcm bytes, 709.1s audio) -> chapter_003.wav
+chapter 003 doc=008 DONE (34,037,760 pcm bytes, 709.1s audio) -> chapter_003.wav, chapter_003.mp3
 ```
 
-Each chapter takes **about 5 minutes** to narrate. A whole novel typically takes **2–4 hours** and costs roughly **a few dollars** in Google credits.
+Batch jobs are asynchronous and priced at 50% of standard Gemini TTS rates. If the Developer API key fails with `API_KEY_INVALID` and ADC exists, cache-missing chunks switch to Vertex AI realtime synthesis; those fallback chunks use standard realtime billing. For Vertex AI realtime mode from the start, add `--synthesis-mode realtime`.
 
 **You can stop it and start it again later.** Finished chapters are skipped automatically, so you can leave it overnight, or pause and resume.
 

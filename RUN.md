@@ -12,7 +12,19 @@ This creates `.venv` and installs `google-genai`, `ebooklib`, `beautifulsoup4`, 
 
 `.env` at the project root. Required only for `--backend auto` (default). Skip this section entirely if you will always run with `--backend local`.
 
-### Mode A — Vertex AI (uses Google Cloud billing; preferred when you have GCP credits)
+### Mode A — Gemini Developer API (default batch mode)
+
+Default synthesis uses Gemini Batch API, one chapter at a time. Inline Batch API support in the installed `google-genai` SDK uses the Gemini Developer API surface, so default batch mode requires:
+
+```
+GEMINI_API_KEY=<your key>
+```
+
+Batch pricing is 50% of standard Gemini TTS pricing. Existing chapter WAV+MP3 files are skipped. If a chapter is missing output files but has cached PCM chunks, only missing chunks are submitted in the batch job before the chapter is stitched.
+
+If the Gemini Developer API key fails with `API_KEY_INVALID` and local Google Cloud ADC is available, default batch mode switches cache-missing chunks to Vertex AI realtime synthesis for the rest of the affected batch groups. This fallback requires `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION`, and `gcloud auth application-default login`. Fallback chunks are realtime Vertex AI requests, so they are not eligible for Gemini Batch API 50% pricing.
+
+### Mode B — Vertex AI realtime mode (uses Google Cloud billing)
 
 Recommended key-based setup:
 
@@ -20,7 +32,7 @@ Recommended key-based setup:
 GOOGLE_CLOUD_API_KEY=<your-vertex-ai-google-cloud-api-key>
 ```
 
-This path does not require local `gcloud` login. The Google Cloud project behind the key must have billing enabled and the Vertex AI API enabled. For existing Google Cloud projects, use a Vertex AI-compatible Google Cloud API key; if the key cannot be bound to a service account under your organization policy, use the ADC setup below. When `GOOGLE_CLOUD_API_KEY` is set, it takes precedence over `USE_VERTEX`, `GOOGLE_CLOUD_PROJECT`, and `GOOGLE_CLOUD_LOCATION`.
+Use this path with `--synthesis-mode realtime`. It does not require local `gcloud` login. The Google Cloud project behind the key must have billing enabled and the Vertex AI API enabled. For existing Google Cloud projects, use a Vertex AI-compatible Google Cloud API key; if the key cannot be bound to a service account under your organization policy, use the ADC setup below. When `GOOGLE_CLOUD_API_KEY` is set, it takes precedence over `USE_VERTEX`, `GOOGLE_CLOUD_PROJECT`, and `GOOGLE_CLOUD_LOCATION` for realtime mode.
 
 ADC setup, used only when `GOOGLE_CLOUD_API_KEY` is absent:
 
@@ -64,14 +76,6 @@ gcloud services enable aiplatform.googleapis.com --project <your-new-project-id>
 # Edit .env and change: GOOGLE_CLOUD_PROJECT=<your-new-project-id>
 ```
 
-### Mode B — Gemini Developer API (uses AI Studio prepayment balance)
-
-```
-GEMINI_API_KEY=<your key>
-```
-
-Omit `USE_VERTEX` or set it to `0`. Also omit `GOOGLE_CLOUD_API_KEY`; a cloud key always selects Vertex AI.
-
 ## Convert EPUB to per-chapter WAVs and MP3s (default behaviour)
 
 One WAV and one MP3 per eligible chapter (`chapter_000.wav` + `chapter_000.mp3`, `chapter_001.wav` + `chapter_001.mp3`, …) under `--output-dir`. Chapters whose WAV and MP3 already exist are both skipped, so the run is resumable if it's interrupted:
@@ -89,10 +93,10 @@ Use `--chapter N` with the 0-based eligible index. Useful for re-runs, spot chec
 
 ```bash
 uv run python -m tts_novel.cli \
-    --input <input_epub_file_path> \
-    --output-dir <output_dir_path> \
-    --chapter <chapter_index> \
-    --voice Sulafat
+    --input "An Academic Affair - Jodi McAlister.epub" \
+    # --output-dir <output_dir_path> \
+    # --chapter <chapter_index> \
+    # --voice Sulafat
 ```
 
 ## Run entirely on a local model (no Google credentials)
@@ -115,6 +119,10 @@ uv run python -m tts_novel.cli \
 | `--output-dir` | `./output` | Directory for per-chapter WAV files. |
 | `--cache-dir` | `<output-dir>/_pcm_cache` | Directory for per-chunk raw PCM cache. |
 | `--backend` | `auto` | `auto` = Gemini TTS with local Kokoro-82M fallback on a content-policy block; `local` = Kokoro-82M only (no Google API calls or authentication required). |
+| `--synthesis-mode` | `batch` | `batch` = Gemini Batch API one chapter at a time at batch pricing; `realtime` = one synchronous Gemini request per missing chunk. `--backend local` always runs locally. |
+| `--batch-poll-interval-s` | `30.0` | Seconds between Gemini Batch API status polls. |
+| `--batch-max-input-mib` | `18.0` | Soft maximum estimated input size per inline batch job, below Gemini's 20 MiB inline guidance. |
+| `--batch-max-estimated-output-mib` | `96.0` | Soft maximum estimated base64 audio output per inline batch job. Larger chapters are split into multiple batch jobs. |
 | `--voice` | `Sulafat` | Prebuilt voice name used by Gemini TTS (ignored when `--backend local`). |
 | `--style-preamble` | British RP female narration instruction | Prepended to each Gemini synthesis prompt (ignored when `--backend local`). |
 | `--chapter` | all | Synthesize only the chapter at this 0-based eligible index. |
@@ -136,12 +144,16 @@ Prerequisite on macOS: `brew install espeak-ng` (Kokoro's phonemizer shells out 
 
 1. `tts_novel.epub_reader.read_epub` — parses the EPUB, yields ordered non-empty document items as `Chapter(index, title, text)`.
 2. `tts_novel.pipeline.select_chapters` — filters out items shorter than `min_chapter_chars` to produce the eligible list; `--chapter N` picks one element of that list.
-3. `tts_novel.backends.build_backend` — constructs the synthesis backend dictated by `--backend`: `auto` builds `FallbackBackend(GeminiBackend, KokoroBackend)` (Gemini client settings loaded from `.env`, key-based Vertex AI, or ADC here, so auth errors surface up-front); `local` builds `KokoroBackend` alone.
+3. Synthesis setup:
+   - Default `--backend auto --synthesis-mode batch`: constructs `GeminiBatchClient` from `GEMINI_API_KEY` and a local Kokoro fallback backend. Each chapter's missing PCM chunks are submitted as one or more inline batch jobs. If the API key fails with `API_KEY_INVALID` and ADC exists, remaining missing chunks in the affected batch groups use Vertex AI realtime synthesis.
+   - `--backend auto --synthesis-mode realtime`: constructs `FallbackBackend(GeminiBackend, KokoroBackend)` from `.env` using key-based Vertex AI, Vertex ADC, or Gemini Developer API.
+   - `--backend local`: constructs `KokoroBackend` alone and ignores Google credentials.
 4. For each eligible chapter:
-   - If `<output-dir>/chapter_<NNN>.wav` already exists, skip the chapter entirely.
+   - If both `<output-dir>/chapter_<NNN>.wav` and `<output-dir>/chapter_<NNN>.mp3` already exist, skip the chapter entirely.
    - Otherwise, `tts_novel.text_chunker.chunk_text` groups paragraphs into chunks ≤ `max_chars_per_chunk` (default: 200 chars, reduced from 2500 for improved Gemini TTS quality consistency); oversized paragraphs fall back to sentence splits and then word-level splits when necessary to preserve the hard limit.
-   - For each chunk: if the PCM cache file exists, load it; otherwise call `backend.synthesize(chunk)` and cache the returned PCM. A `SynthesisResult.fallback_reason` that is not `None` indicates the primary backend (Gemini) blocked and the secondary (Kokoro) produced the audio; this is recorded as a `BlockedChunkRecord` for the summary.
-   - `tts_novel.wav_writer.concat_pcm` + `write_wav` produce the chapter WAV (24 kHz mono 16-bit).
+   - Batch mode: collect cache-missing chunks for the chapter, split into multiple jobs if the estimated inline input or base64 output would exceed configured ceilings, submit those jobs, write returned PCM into `_pcm_cache`, use Vertex AI ADC realtime synthesis after `API_KEY_INVALID` when available, and use Kokoro for per-request blocked results.
+   - Realtime/local mode: for each missing chunk, call `backend.synthesize(chunk)` and cache the returned PCM.
+   - `tts_novel.audio_writer.concat_pcm`, `write_wav`, and `write_mp3` produce the chapter WAV and MP3.
 
 ## Output layout
 

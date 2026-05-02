@@ -54,12 +54,13 @@ def estimate(
     input_chars: int,
     audio_seconds: float,
     model: str = DEFAULT_TTS_MODEL,
+    price_multiplier: float = 1.0,
 ) -> CostEstimate:
     input_price, audio_price = _rates(model)
     input_tokens = estimate_input_tokens(input_chars)
     audio_tokens = estimate_audio_tokens(audio_seconds)
-    input_usd = input_tokens * input_price / 1_000_000
-    output_usd = audio_tokens * audio_price / 1_000_000
+    input_usd = input_tokens * input_price * price_multiplier / 1_000_000
+    output_usd = audio_tokens * audio_price * price_multiplier / 1_000_000
     return CostEstimate(
         input_chars=input_chars,
         input_tokens=input_tokens,
@@ -74,6 +75,7 @@ def estimate(
 def estimate_from_text_only(
     input_chars: int,
     model: str = DEFAULT_TTS_MODEL,
+    price_multiplier: float = 1.0,
 ) -> CostEstimate:
     """Planning-grade estimate when audio has not been synthesized yet.
 
@@ -82,4 +84,9 @@ def estimate_from_text_only(
     dominates the total, so this heuristic is the largest source of error.
     """
     projected_audio_seconds = input_chars / APPROX_CHARS_PER_AUDIO_SECOND
-    return estimate(input_chars, projected_audio_seconds, model=model)
+    return estimate(
+        input_chars,
+        projected_audio_seconds,
+        model=model,
+        price_multiplier=price_multiplier,
+    )
