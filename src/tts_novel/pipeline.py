@@ -16,9 +16,11 @@ from tts_novel.audio_writer import (
 from tts_novel.config import (
     CHANNELS,
     DEFAULT_STYLE_PREAMBLE,
+    DEFAULT_TTS_MODEL,
     DEFAULT_VOICE,
     SAMPLE_RATE_HZ,
     SAMPLE_WIDTH_BYTES,
+    TTS_MODELS,
 )
 from tts_novel.cost import CostEstimate, estimate, estimate_from_text_only
 from tts_novel.epub_reader import Chapter, read_epub
@@ -122,12 +124,13 @@ class ConversionPlan:
     style_preamble: str = DEFAULT_STYLE_PREAMBLE
     chapter_index: int | None = None
     min_chapter_chars: int = 2000
-    max_chars_per_chunk: int = 400
+    max_chars_per_chunk: int = 200
     combine: bool = True
     backend_mode: BackendMode = "auto"
     local_voice: str = "bf_emma"
     local_lang_code: str = "b"
     mp3_quality: float | None = 0.0
+    tts_model: str = DEFAULT_TTS_MODEL
 
 
 @dataclass
@@ -287,7 +290,7 @@ def _synthesize_chapter(
             rec_audio_seconds = chunk_audio_seconds
             if result.backend == "gemini":
                 rec_billed_chars = len(plan.style_preamble) + len(chunk)
-                chunk_cost = estimate(rec_billed_chars, chunk_audio_seconds)
+                chunk_cost = estimate(rec_billed_chars, chunk_audio_seconds, model=plan.tts_model)
                 rec_cost_usd = chunk_cost.total_usd
                 status = (
                     f"{result.backend:6s} ({len(pcm):,} bytes in {result.seconds:.1f}s, "
@@ -462,6 +465,7 @@ def convert(plan: ConversionPlan, backend: TTSBackend | None = None) -> Conversi
             style_preamble=plan.style_preamble,
             local_voice=plan.local_voice,
             local_lang_code=plan.local_lang_code,
+            tts_model=plan.tts_model,
         )
 
     plan.output_dir.mkdir(parents=True, exist_ok=True)
@@ -497,7 +501,7 @@ def convert(plan: ConversionPlan, backend: TTSBackend | None = None) -> Conversi
     if plan.backend_mode == "auto":
         preamble_chars = len(plan.style_preamble) * total_chunks
         upper_bound_chars = total_text_chars + preamble_chars
-        planning_cost = estimate_from_text_only(upper_bound_chars)
+        planning_cost = estimate_from_text_only(upper_bound_chars, model=plan.tts_model)
         print(
             f"[{_ts()}] plan: Gemini cost estimate if all chunks synthesized fresh: "
             f"~${planning_cost.total_usd:.2f} "

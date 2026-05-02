@@ -3,7 +3,7 @@
 import argparse
 from pathlib import Path
 
-from tts_novel.config import DEFAULT_STYLE_PREAMBLE, DEFAULT_VOICE
+from tts_novel.config import DEFAULT_STYLE_PREAMBLE, DEFAULT_TTS_MODEL, DEFAULT_VOICE, TTS_MODELS
 from tts_novel.pipeline import ConversionPlan, convert
 
 
@@ -63,8 +63,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--max-chars-per-chunk",
         type=int,
-        default=400,
-        help="Maximum characters per TTS request (default 400, reduced from 2500 to improve Gemini TTS quality consistency on long passages).",
+        default=200,
+        help="Maximum characters per TTS request (default 200, per Deepgram TTS chunking guidance for long-form content).",
     )
     parser.add_argument(
         "--no-combine",
@@ -94,6 +94,15 @@ def build_parser() -> argparse.ArgumentParser:
             "0.5 = balanced (~40 kbps), 0.8 = smallest (~33 kbps)."
         ),
     )
+    parser.add_argument(
+        "--tts-model",
+        default=DEFAULT_TTS_MODEL,
+        choices=sorted(TTS_MODELS),
+        help=(
+            f"Gemini TTS model ID (default: {DEFAULT_TTS_MODEL}). "
+            "3.1 Flash TTS yields higher quality at 2x cost; 2.5 Flash TTS is the cost-effective default."
+        ),
+    )
     return parser
 
 
@@ -117,6 +126,7 @@ def main() -> None:
         local_voice=args.local_voice,
         local_lang_code=args.local_lang_code,
         mp3_quality=args.mp3_quality,
+        tts_model=args.tts_model,
     )
 
     result = convert(plan)
@@ -151,8 +161,9 @@ def main() -> None:
         )
 
     if result.gemini_chunks > 0:
-        input_usd = result.gemini_input_tokens * 1.0 / 1_000_000
-        output_usd = result.gemini_audio_tokens * 20.0 / 1_000_000
+        model_rates = TTS_MODELS[args.tts_model]
+        input_usd = result.gemini_input_tokens * model_rates["input_usd_per_1m"] / 1_000_000
+        output_usd = result.gemini_audio_tokens * model_rates["audio_usd_per_1m"] / 1_000_000
         print(
             f"Gemini API cost (this run, {result.gemini_chunks} fresh chunk(s)): "
             f"~${result.gemini_cost_usd:.4f}  "
@@ -160,7 +171,9 @@ def main() -> None:
             f"output {result.gemini_audio_tokens:,}t ${output_usd:.4f}]"
         )
         print(
-            "  Rates: text $1.00 / 1M tokens, audio $20.00 / 1M tokens "
+            f"  Model: {args.tts_model}  Rates: "
+            f"text ${model_rates['input_usd_per_1m']:.2f} / 1M tokens, "
+            f"audio ${model_rates['audio_usd_per_1m']:.2f} / 1M tokens "
             "(4 chars ≈ 1 token, 25 audio tokens per second of audio). "
             "Estimate only; reconcile against the Cloud Billing invoice."
         )

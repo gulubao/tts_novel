@@ -12,30 +12,15 @@ The default Gemini voice is **Sulafat**, an English UK female voice; see https:/
 
 ```bash
 brew install uv
-brew install --cask google-cloud-sdk
 ```
 
 If `brew` itself isn't installed yet, get it first from https://brew.sh — paste the single command from their front page.
 
-### 2. Sign in to Google
+### 2. Configure Google Cloud billing
 
-```bash
-gcloud auth login
-gcloud auth application-default login
-```
+Use a Google Cloud API key for Vertex AI when possible. The Google Cloud project behind the key must have billing enabled and the Vertex AI API enabled.
 
-### 3. Enable the service on your Google Cloud project
-
-Go to https://console.cloud.google.com and note your **Project ID** (shown at the top of the page). Then run:
-
-```bash
-gcloud auth application-default set-quota-project YOUR_PROJECT_ID
-gcloud services enable aiplatform.googleapis.com --project YOUR_PROJECT_ID
-```
-
-Replace `YOUR_PROJECT_ID` with the one from the console.
-
-### 4. Download this tool
+### 3. Download this tool
 
 ```bash
 cd ~/Documents
@@ -43,20 +28,34 @@ git clone <this-repo-url> tts_novel
 cd tts_novel
 ```
 
-Create a file called `.env` in that folder with these four lines (use your own Project ID):
+Create a file called `.env` in that folder:
 
 ```bash
 touch .env
 ```
 
 ```.env
+GOOGLE_CLOUD_API_KEY=your-google-cloud-api-key
+```
+
+This key path does not require `gcloud` login. If you cannot use a Vertex AI-compatible Google Cloud API key, use ADC instead:
+
+```bash
+brew install --cask google-cloud-sdk
+gcloud auth application-default login
+gcloud auth application-default set-quota-project YOUR_PROJECT_ID
+gcloud services enable aiplatform.googleapis.com --project YOUR_PROJECT_ID
+```
+
+Then use:
+
+```.env
 USE_VERTEX=1
 GOOGLE_CLOUD_PROJECT=YOUR_PROJECT_ID
 GOOGLE_CLOUD_LOCATION=us-central1
-GEMINI_API_KEY=unused
 ```
 
-### 5. Install the Python bits
+### 4. Install the Python bits
 
 ```bash
 uv sync
@@ -65,6 +64,10 @@ uv sync
 ### Switch to a different Google Cloud project
 
 If you need to switch to another Google Cloud account or project (e.g., to use a different billing account):
+
+With key-based setup, replace `GOOGLE_CLOUD_API_KEY` in `.env` with a key from the new project.
+
+With ADC setup:
 
 ```bash
 # 1. Sign in with the new account

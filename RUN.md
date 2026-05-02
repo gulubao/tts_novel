@@ -14,6 +14,16 @@ This creates `.venv` and installs `google-genai`, `ebooklib`, `beautifulsoup4`, 
 
 ### Mode A — Vertex AI (uses Google Cloud billing; preferred when you have GCP credits)
 
+Recommended key-based setup:
+
+```
+GOOGLE_CLOUD_API_KEY=<your-vertex-ai-google-cloud-api-key>
+```
+
+This path does not require local `gcloud` login. The Google Cloud project behind the key must have billing enabled and the Vertex AI API enabled. For existing Google Cloud projects, use a Vertex AI-compatible Google Cloud API key; if the key cannot be bound to a service account under your organization policy, use the ADC setup below. When `GOOGLE_CLOUD_API_KEY` is set, it takes precedence over `USE_VERTEX`, `GOOGLE_CLOUD_PROJECT`, and `GOOGLE_CLOUD_LOCATION`.
+
+ADC setup, used only when `GOOGLE_CLOUD_API_KEY` is absent:
+
 ```
 USE_VERTEX=1
 GOOGLE_CLOUD_PROJECT=<your-gcp-project-id>
@@ -32,6 +42,10 @@ gcloud services enable aiplatform.googleapis.com --project <your-gcp-project-id>
 ### Switching Google Cloud projects
 
 To switch to a different Google Cloud project or account (e.g., to use a different billing account):
+
+For key-based setup, replace `GOOGLE_CLOUD_API_KEY` with a key from the target Google Cloud project.
+
+For ADC setup:
 
 ```bash
 # 1. Sign in with the new account (opens browser)
@@ -56,7 +70,7 @@ gcloud services enable aiplatform.googleapis.com --project <your-new-project-id>
 GEMINI_API_KEY=<your key>
 ```
 
-Omit `USE_VERTEX` or set it to `0`.
+Omit `USE_VERTEX` or set it to `0`. Also omit `GOOGLE_CLOUD_API_KEY`; a cloud key always selects Vertex AI.
 
 ## Convert EPUB to per-chapter WAVs and MP3s (default behaviour)
 
@@ -105,15 +119,16 @@ uv run python -m tts_novel.cli \
 | `--style-preamble` | British RP female narration instruction | Prepended to each Gemini synthesis prompt (ignored when `--backend local`). |
 | `--chapter` | all | Synthesize only the chapter at this 0-based eligible index. |
 | `--min-chapter-chars` | `2000` | Discards short EPUB items (cover, TOC, dedication). |
-| `--max-chars-per-chunk` | `400` | Maximum characters per TTS request (reduced from 2500 to improve Gemini TTS quality consistency on long passages). |
+| `--max-chars-per-chunk` | `200` | Maximum characters per TTS request (reduced from 2500 to improve Gemini TTS quality consistency on long passages). |
 | `--no-combine` | off | Skip the final step that produces the combined `<book-stem>.wav` and `<book-stem>.mp3`. Ignored when `--chapter N` is set. |
 | `--local-voice` | `bf_emma` | Kokoro voice id (British female). Used in `auto` fallback and `local` mode. |
 | `--local-lang-code` | `b` | Kokoro language code (`b` = British English, `a` = American English). |
 | `--mp3-quality` | `0.0` | MP3 compression level in [0.0, 0.9]. 0.0 = highest quality (~73 kbps VBR, default), 0.5 = balanced (~40 kbps), 0.8 = smallest (~33 kbps). |
+| `--tts-model` | `gemini-2.5-flash-preview-tts` | Gemini TTS model ID. Choices: `gemini-2.5-flash-preview-tts` (default, $0.50/$10.00 per 1M input/output tokens) or `gemini-3.1-flash-tts-preview` ($1.00/$20.00, higher quality at 2x cost). Ignored when `--backend local`. |
 
 ## Local-only mode (no Google account, no network, no cost)
 
-Pass `--backend local` to run entirely on Kokoro-82M (Apache-2.0, ~1 GB RAM, CPU-only). The model loads on first chunk, then stays resident for the rest of the run. The `.env` file, Vertex AI, and `GEMINI_API_KEY` are all ignored. Voice and style preamble settings are Gemini-only and have no effect in this mode; use `--local-voice` to switch Kokoro voices.
+Pass `--backend local` to run entirely on Kokoro-82M (Apache-2.0, ~1 GB RAM, CPU-only). The model loads on first chunk, then stays resident for the rest of the run. The `.env` file, Vertex AI, `GOOGLE_CLOUD_API_KEY`, and `GEMINI_API_KEY` are all ignored. Voice and style preamble settings are Gemini-only and have no effect in this mode; use `--local-voice` to switch Kokoro voices.
 
 Prerequisite on macOS: `brew install espeak-ng` (Kokoro's phonemizer shells out to this binary for out-of-vocabulary graphemes).
 
@@ -121,10 +136,10 @@ Prerequisite on macOS: `brew install espeak-ng` (Kokoro's phonemizer shells out 
 
 1. `tts_novel.epub_reader.read_epub` — parses the EPUB, yields ordered non-empty document items as `Chapter(index, title, text)`.
 2. `tts_novel.pipeline.select_chapters` — filters out items shorter than `min_chapter_chars` to produce the eligible list; `--chapter N` picks one element of that list.
-3. `tts_novel.backends.build_backend` — constructs the synthesis backend dictated by `--backend`: `auto` builds `FallbackBackend(GeminiBackend, KokoroBackend)` (Gemini client settings loaded from `.env` / ADC here, so auth errors surface up-front); `local` builds `KokoroBackend` alone.
+3. `tts_novel.backends.build_backend` — constructs the synthesis backend dictated by `--backend`: `auto` builds `FallbackBackend(GeminiBackend, KokoroBackend)` (Gemini client settings loaded from `.env`, key-based Vertex AI, or ADC here, so auth errors surface up-front); `local` builds `KokoroBackend` alone.
 4. For each eligible chapter:
    - If `<output-dir>/chapter_<NNN>.wav` already exists, skip the chapter entirely.
-   - Otherwise, `tts_novel.text_chunker.chunk_text` groups paragraphs into chunks ≤ `max_chars_per_chunk` (default: 400 chars, reduced from 2500 for improved Gemini TTS quality consistency); oversized paragraphs fall back to sentence splits and then word-level splits when necessary to preserve the hard limit.
+   - Otherwise, `tts_novel.text_chunker.chunk_text` groups paragraphs into chunks ≤ `max_chars_per_chunk` (default: 200 chars, reduced from 2500 for improved Gemini TTS quality consistency); oversized paragraphs fall back to sentence splits and then word-level splits when necessary to preserve the hard limit.
    - For each chunk: if the PCM cache file exists, load it; otherwise call `backend.synthesize(chunk)` and cache the returned PCM. A `SynthesisResult.fallback_reason` that is not `None` indicates the primary backend (Gemini) blocked and the secondary (Kokoro) produced the audio; this is recorded as a `BlockedChunkRecord` for the summary.
    - `tts_novel.wav_writer.concat_pcm` + `write_wav` produce the chapter WAV (24 kHz mono 16-bit).
 

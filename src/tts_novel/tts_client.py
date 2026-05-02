@@ -13,7 +13,7 @@ from google import genai
 from google.genai import errors, types
 
 from tts_novel.backends.base import BlockedContentError
-from tts_novel.config import MODEL_ID, ClientSettings
+from tts_novel.config import DEFAULT_TTS_MODEL, ClientSettings
 
 __all__ = ["BlockedContentError", "TTSClient"]
 
@@ -52,13 +52,17 @@ _RATE_LIMIT_MAX_DELAY_S = 120.0
 
 
 class TTSClient:
-    def __init__(self, settings: ClientSettings):
+    def __init__(self, settings: ClientSettings, model_id: str = DEFAULT_TTS_MODEL):
+        self._model_id = model_id
         if settings.use_vertex:
-            self._client = genai.Client(
-                vertexai=True,
-                project=settings.project,
-                location=settings.location,
-            )
+            if settings.api_key:
+                self._client = genai.Client(vertexai=True, api_key=settings.api_key)
+            else:
+                self._client = genai.Client(
+                    vertexai=True,
+                    project=settings.project,
+                    location=settings.location,
+                )
         else:
             self._client = genai.Client(api_key=settings.api_key)
 
@@ -68,7 +72,7 @@ class TTSClient:
         for attempt in range(1, _RATE_LIMIT_ATTEMPTS + 1):
             try:
                 response = self._client.models.generate_content(
-                    model=MODEL_ID,
+                    model=self._model_id,
                     contents=prompt,
                     config=types.GenerateContentConfig(
                         response_modalities=["AUDIO"],
