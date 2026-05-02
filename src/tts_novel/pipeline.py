@@ -122,7 +122,7 @@ class ConversionPlan:
     style_preamble: str = DEFAULT_STYLE_PREAMBLE
     chapter_index: int | None = None
     min_chapter_chars: int = 2000
-    max_chars_per_chunk: int = 833
+    max_chars_per_chunk: int = 400
     combine: bool = True
     backend_mode: BackendMode = "auto"
     local_voice: str = "bf_emma"
