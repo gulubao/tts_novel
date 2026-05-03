@@ -179,8 +179,11 @@ mkdir -p ~/Documents/Storyteller
 
 # 2. Generate a secret key (one-time)
 export STORYTELLER_SECRET_KEY=$(openssl rand -base64 32)
+echo $STORYTELLER_SECRET_KEY > ./STORYTELLER_SECRET_KEY.txt
+```
 
 # 3. Start the server
+```bash
 docker run -d \
   --name storyteller \
   -v ~/Documents/Storyteller:/data:rw \
@@ -191,6 +194,11 @@ docker run -d \
 
 Or with Docker Compose — create `compose.yaml`:
 
+```bash
+touch compose.yaml 
+vim compose.yaml
+```
+paste the following content:
 ```yaml
 services:
   web:
@@ -262,3 +270,12 @@ Requires the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud
 4. Install the [Storyteller iOS app](https://apps.apple.com/app/storyteller) and connect to your server to read and listen offline.
 
 For the full self-hosting guide, see [https://storyteller-platform.dev/docs/installation/self-hosting](https://storyteller-platform.dev/docs/installation/self-hosting).
+
+### remote host via tailscale
+
+https://storyteller-platform.dev/docs/community-guides/tailscale
+
+```bash
+# on computer with tailscale installed
+tailscale serve --https=443 --bg 8001
+```

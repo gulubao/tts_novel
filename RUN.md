@@ -93,7 +93,7 @@ Use `--chapter N` with the 0-based eligible index. Useful for re-runs, spot chec
 
 ```bash
 uv run python -m tts_novel.cli \
-    --input "An Academic Affair - Jodi McAlister.epub" \
+    --input <input_epub_file_path> \
     # --output-dir <output_dir_path> \
     # --chapter <chapter_index> \
     # --voice Sulafat
