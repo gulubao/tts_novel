@@ -207,6 +207,7 @@ services:
       - ~/Documents/Storyteller:/data:rw
     environment:
       - STORYTELLER_SECRET_KEY_FILE=/run/secrets/secret_key
+      - ENABLE_WEB_READER=true
     ports:
       - "8001:8001"
     secrets:
@@ -233,6 +234,7 @@ services:
       - ~/Documents/Storyteller:/data:rw
     environment:
       - STORYTELLER_SECRET_KEY_FILE=/run/secrets/secret_key
+      - ENABLE_WEB_READER=true
     ports:
       - "8001:8001"
     deploy:
