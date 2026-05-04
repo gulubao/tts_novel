@@ -4,7 +4,6 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Literal
 
 from tts_novel.backends import BackendMode, TTSBackend, build_backend
 from tts_novel.audio_writer import (
@@ -32,7 +31,6 @@ from tts_novel.cost import (
 from tts_novel.epub_reader import Chapter, read_epub
 from tts_novel.text_chunker import chunk_text
 
-SynthesisMode = Literal["batch", "realtime"]
 BATCH_PRICE_MULTIPLIER = 0.5
 
 
@@ -140,7 +138,6 @@ class ConversionPlan:
     local_lang_code: str = "b"
     mp3_quality: float | None = 0.0
     tts_model: str = DEFAULT_TTS_MODEL
-    synthesis_mode: SynthesisMode = "batch"
     batch_poll_interval_s: float = 30.0
     batch_max_input_mib: float = 18.0
     batch_max_estimated_output_mib: float = 96.0
@@ -222,6 +219,7 @@ class ConversionResult:
     gemini_input_tokens: int = 0
     gemini_audio_tokens: int = 0
     gemini_chunks: int = 0
+    used_batch: bool = False
 
     @property
     def total_pcm_bytes(self) -> int:
@@ -261,8 +259,13 @@ def _cache_path(plan: ConversionPlan, chapter_doc_index: int, chunk_index: int) 
     return plan.cache_dir / f"ch{chapter_doc_index:03d}_c{chunk_index:03d}.pcm"
 
 
-def _uses_gemini_batch(plan: ConversionPlan) -> bool:
-    return plan.backend_mode == "auto" and plan.synthesis_mode == "batch"
+def _should_use_batch() -> bool:
+    """Auto-detect: Gemini Batch API when only GEMINI_API_KEY is available;
+    Vertex AI realtime when Google Cloud credentials are present."""
+    from tts_novel.config import load_client_settings
+
+    settings = load_client_settings()
+    return not settings.use_vertex
 
 
 def _batch_input_bytes(item: _ChunkWorkItem, plan: ConversionPlan) -> int:
@@ -571,6 +574,8 @@ def _synthesize_chapter(
     fallback_backend: TTSBackend | None,
     blocked_sink: list["BlockedChunkRecord"],
     progress: ProgressTracker,
+    *,
+    use_batch: bool = False,
 ) -> ChapterResult:
     wav_path = _chapter_wav_path(plan.output_dir, eligible_index)
     mp3_path = _chapter_mp3_path(plan.output_dir, eligible_index)
@@ -610,7 +615,7 @@ def _synthesize_chapter(
     )
 
     batch_outcomes: dict[str, _ChunkOutcome] = {}
-    if _uses_gemini_batch(plan):
+    if use_batch:
         if batch_client is None or fallback_backend is None:
             raise RuntimeError("batch mode requires a GeminiBatchClient and fallback backend")
         missing_items = [
@@ -874,7 +879,9 @@ def convert(
     batch_client: GeminiBatchClient | None = None,
     fallback_backend: TTSBackend | None = None,
 ) -> ConversionResult:
-    if _uses_gemini_batch(plan):
+    use_batch = plan.backend_mode == "auto" and _should_use_batch()
+
+    if use_batch:
         if batch_client is None:
             from tts_novel.config import load_batch_client_settings
 
@@ -924,7 +931,7 @@ def convert(
         total_chunks += len(chunk_list)
         total_text_chars += sum(len(c) for c in chunk_list)
     progress = ProgressTracker(total_chunks=total_chunks, total_chapters=len(iter_set))
-    effective_synthesis_mode = "batch" if _uses_gemini_batch(plan) else "realtime"
+    effective_synthesis_mode = "batch" if use_batch else "realtime"
     print(
         f"[{_ts()}] plan: backend={plan.backend_mode} synthesis={effective_synthesis_mode} "
         f"{len(iter_set)} chapter(s), {total_chunks} chunk(s) total",
@@ -933,13 +940,13 @@ def convert(
     if plan.backend_mode == "auto":
         preamble_chars = len(plan.style_preamble) * total_chunks
         upper_bound_chars = total_text_chars + preamble_chars
-        price_multiplier = BATCH_PRICE_MULTIPLIER if _uses_gemini_batch(plan) else 1.0
+        price_multiplier = BATCH_PRICE_MULTIPLIER if use_batch else 1.0
         planning_cost = estimate_from_text_only(
             upper_bound_chars,
             model=plan.tts_model,
             price_multiplier=price_multiplier,
         )
-        cost_surface = "Gemini Batch API" if _uses_gemini_batch(plan) else "Gemini API"
+        cost_surface = "Gemini Batch API" if use_batch else "Google Cloud TTS"
         print(
             f"[{_ts()}] plan: {cost_surface} cost estimate if all chunks synthesized fresh: "
             f"~${planning_cost.total_usd:.2f} "
@@ -959,6 +966,7 @@ def convert(
                 batch_client,
                 fallback_backend,
                 result.blocked_chunks, progress,
+                use_batch=use_batch,
             )
         )
 
@@ -966,6 +974,7 @@ def convert(
     result.gemini_input_tokens = progress.gemini_input_tokens
     result.gemini_audio_tokens = progress.gemini_audio_tokens
     result.gemini_chunks = progress.gemini_chunks
+    result.used_batch = use_batch
 
     _combine_chapter_wavs(plan, result)
     return result

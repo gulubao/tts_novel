@@ -35,10 +35,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="tts-novel",
         description=(
-            "Convert an EPUB file to one narrated WAV and MP3 per chapter. Default "
-            "synthesis is Gemini Batch API one chapter at a time, with local "
-            "Kokoro-82M fallback on content-policy blocks. '--backend local' "
-            "bypasses Gemini entirely."
+            "Convert an EPUB file to one narrated WAV and MP3 per chapter. "
+            "With Google Cloud credentials (GOOGLE_CLOUD_API_KEY or ADC), uses "
+            "Vertex AI realtime TTS. Otherwise uses Gemini Developer API Batch TTS "
+            "(GEMINI_API_KEY). Both modes fall back to local Kokoro-82M on "
+            "content-policy blocks. '--backend local' bypasses cloud TTS entirely."
         ),
     )
     parser.add_argument("--input", required=True, type=Path, help="Path to the EPUB file.")
@@ -59,20 +60,10 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("auto", "local"),
         default="auto",
         help=(
-            "Which synthesis backend to use. 'auto' (default): call Gemini TTS "
-            "first, fall back to local Kokoro-82M on a content-policy block. "
+            "Which synthesis backend to use. 'auto' (default): cloud TTS "
+            "(Vertex AI realtime if Google Cloud credentials present, else Gemini "
+            "Batch API), falling back to local Kokoro-82M on content-policy blocks. "
             "'local': use Kokoro-82M only, no Google API calls or authentication."
-        ),
-    )
-    parser.add_argument(
-        "--synthesis-mode",
-        choices=("batch", "realtime"),
-        default="batch",
-        help=(
-            "Gemini synthesis transport. 'batch' (default): submit cache-missing "
-            "chunks one chapter at a time through Gemini Batch API at batch "
-            "pricing. 'realtime': send one synchronous request per missing chunk. "
-            "--backend local always runs locally regardless of this setting."
         ),
     )
     parser.add_argument(
@@ -188,7 +179,6 @@ def main() -> None:
         local_lang_code=args.local_lang_code,
         mp3_quality=args.mp3_quality,
         tts_model=args.tts_model,
-        synthesis_mode=args.synthesis_mode,
         batch_poll_interval_s=args.batch_poll_interval_s,
         batch_max_input_mib=args.batch_max_input_mib,
         batch_max_estimated_output_mib=args.batch_max_estimated_output_mib,
@@ -226,16 +216,12 @@ def main() -> None:
 
     if result.gemini_chunks > 0:
         model_rates = TTS_MODELS[args.tts_model]
-        price_multiplier = (
-            BATCH_PRICE_MULTIPLIER
-            if args.backend == "auto" and args.synthesis_mode == "batch"
-            else 1.0
-        )
+        price_multiplier = BATCH_PRICE_MULTIPLIER if result.used_batch else 1.0
         input_rate = model_rates["input_usd_per_1m"] * price_multiplier
         output_rate = model_rates["audio_usd_per_1m"] * price_multiplier
         input_usd = result.gemini_input_tokens * input_rate / 1_000_000
         output_usd = result.gemini_audio_tokens * output_rate / 1_000_000
-        surface = "Gemini Batch API" if price_multiplier == BATCH_PRICE_MULTIPLIER else "Gemini API"
+        surface = "Gemini Batch API" if result.used_batch else "Google Cloud TTS"
         print(
             f"{surface} cost (this run, {result.gemini_chunks} Gemini-billed chunk(s)): "
             f"~${result.gemini_cost_usd:.4f}  "

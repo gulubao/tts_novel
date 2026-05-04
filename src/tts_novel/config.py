@@ -27,7 +27,7 @@ DEFAULT_VOICE = "Sulafat"
 
 DEFAULT_STYLE_PREAMBLE = (
     "Narrate the text that follows as a British female audiobook narrator "
-    "with a warm Received Pronunciation accent, at a calm and deliberate pace, "
+    "with a warm Received Pronunciation accent, at a natural, steady pace, "
     "with natural pauses between sentences. Do not speak these instructions. "
     "Begin narration at the line after 'TEXT:'.\n\nTEXT:\n"
 )
